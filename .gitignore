@@ -69,3 +69,83 @@ performance_reports/
 # 但保留示例配置
 !config.example.py
 !README.md
+
+# === V12实盘系统 - 本地保留文件 ===
+# 这些文件在本地使用，但不推送到GitHub
+
+# 旧版本策略
+strategy_v2.py
+strategy_v3.py
+strategy_v4_ml.py
+strategy_v5_*.py
+strategy_v6_*.py
+strategy_v7_*.py
+strategy_v8_*.py
+strategy_v9_*.py
+strategy_v10*.py
+strategy.py
+strategy_comparison_report.py
+
+# 旧版本主程序
+main.py
+main_v2*.py
+main_v12_live.py
+main_v12_ml_grid_live.py
+
+# 回测脚本
+backtest_*.py
+
+# 监控脚本
+monitor.py
+monitor_trades.py
+monitor_v12.py
+
+# 测试和诊断
+test_*.py
+diagnose.py
+v12_diagnostic.py
+v12_verify.py
+verify_*.py
+
+# 数据分析
+analyze_*.py
+feature_analyzer.py
+pnl_calc.py
+view_logs.py
+check_real_orders.py
+
+# 数据下载
+download_*.py
+
+# 旧文档（保留README.md）
+BUG_FIXES_APPLIED.md
+CODE_REVIEW_REPORT.md
+core_logic_analysis.md
+eth_data_sources_analysis.md
+ETH_STRATEGY_SUMMARY.md
+EVT_*.md
+FEE_ANALYSIS.md
+GITHUB_PUSH_GUIDE.md
+MARKET_DATA_INTEGRATION.md
+MARKET_REGIMES_ANALYSIS.md
+README_GITHUB.md
+strategy_upgrade_summary.md
+TP_SYSTEM_SUMMARY.md
+TRADE_ANALYSIS_REPORT.md
+V12_CONFIG_GUIDE.md
+V12_OPTIMIZED_README.md
+V2_5_HYBRID_README.md
+V3_UPGRADE_SUMMARY.md
+
+# 数据文件
+*.json
+*.csv
+
+# 临时脚本
+fix_*.bat
+push_*.bat
+PUSH_TO_GITHUB.bat
+start.bat
+start_v12_live.bat
+KEEP_FILES.txt
+clean_github.py
