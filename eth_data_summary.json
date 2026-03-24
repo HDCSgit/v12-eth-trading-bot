@@ -1,0 +1,15 @@
+{
+  "symbol": "ETHUSDT",
+  "interval": "1h",
+  "start_time": "2023-12-31 16:00:00",
+  "end_time": "2026-03-19 16:00:00",
+  "total_rows": 19417,
+  "price_low": 1384.0,
+  "price_high": 4957.67,
+  "data_quality": {
+    "is_continuous": true,
+    "missing_values": 0,
+    "duplicates": 0,
+    "suspicious_prices": 0
+  }
+}
