@@ -605,10 +605,108 @@ class SignalGenerator:
         else:
             logger.info("⚠️ ML环境检测模块已停用（使用纯技术指标判断）")
         
+    # ========== 新增：当日区间位置过滤 (2026-03-27) ==========
+    
+    def _get_daily_position_pct(self, current_price: float, df: pd.DataFrame) -> float:
+        """计算当日价格位置百分比 (0-100%)"""
+        try:
+            # 获取今日数据（基于timestamp列）
+            latest_ts = pd.to_datetime(df['timestamp'].iloc[-1])
+            today_start = latest_ts.normalize()
+            today_data = df[pd.to_datetime(df['timestamp']) >= today_start]
+            
+            if len(today_data) < 5:
+                # 数据不足，使用最近24小时
+                today_data = df.tail(96)  # 15m * 96 = 24h
+            
+            daily_high = today_data['high'].max()
+            daily_low = today_data['low'].min()
+            
+            if daily_high == daily_low:
+                return 50.0
+            
+            position_pct = (current_price - daily_low) / (daily_high - daily_low) * 100
+            return position_pct
+        except Exception as e:
+            logger.debug(f"计算当日位置失败: {e}")
+            return 50.0
+    
+    def _check_daily_position_filter(self, action: str, current_price: float, df: pd.DataFrame) -> Tuple[bool, str]:
+        """当日区间位置过滤器"""
+        if not CONFIG.get("ENABLE_DAILY_POSITION_FILTER", False):
+            return True, "过滤器关闭"
+        
+        position_pct = self._get_daily_position_pct(current_price, df)
+        
+        if action == 'SELL':
+            min_position = CONFIG.get("DAILY_POSITION_SHORT_MIN", 0.70) * 100
+            if position_pct < min_position:
+                return False, f"不在当日高位({position_pct:.1f}%<{min_position:.0f}%)"
+        elif action == 'BUY':
+            max_position = CONFIG.get("DAILY_POSITION_LONG_MAX", 0.30) * 100
+            if position_pct > max_position:
+                return False, f"不在当日低位({position_pct:.1f}%>{max_position:.0f}%)"
+        
+        return True, f"位置合格({position_pct:.1f}%)"
+    
+    def _calculate_fixed_sl_tp(self, entry: float, action: str, atr: float = None) -> Tuple[float, float]:
+        """使用固定盈亏比计算SL/TP"""
+        if not CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
+            # 使用传统ATR模式
+            if atr is None:
+                atr = entry * 0.01  # 默认1%
+            sl_mult = CONFIG.get("STOP_LOSS_ATR_MULT", 2.0)
+            tp_mult = CONFIG.get("TP_SIDEWAYS_ATR_MULT", 4.0)
+            if action == 'BUY':
+                sl = entry - atr * sl_mult
+                tp = entry + atr * tp_mult
+            else:
+                sl = entry + atr * sl_mult
+                tp = entry - atr * tp_mult
+            return sl, tp
+        
+        # 固定百分比模式
+        stop_pct = CONFIG.get("FIXED_STOP_PCT", 0.008)
+        tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016)
+        
+        if action == 'BUY':
+            sl = entry * (1 - stop_pct)
+            tp = entry * (1 + tp_pct)
+        else:
+            sl = entry * (1 + stop_pct)
+            tp = entry * (1 - tp_pct)
+        
+        return sl, tp
+    
+    def _calculate_position_size(self, base_risk: float, confidence: float, regime: MarketRegime = None) -> float:
+        """动态仓位计算 - 仅按置信度调整，不按环境简化"""
+        if not CONFIG.get("USE_DYNAMIC_POSITION_SIZE", False):
+            return base_risk
+        
+        mult = 1.0
+        high_threshold = CONFIG.get("POSITION_SIZE_HIGH_THRESHOLD", 0.75)
+        low_threshold = CONFIG.get("POSITION_SIZE_LOW_THRESHOLD", 0.60)
+        
+        # 仅按置信度调整（三档）
+        if confidence >= high_threshold:
+            # 高置信度：增加仓位
+            mult = CONFIG.get("POSITION_SIZE_HIGH_CONF", 1.5)
+        elif confidence >= low_threshold:
+            # 中等置信度：标准仓位
+            mult = CONFIG.get("POSITION_SIZE_MID_CONF", 1.0)
+        else:
+            # 低置信度：减少仓位
+            mult = CONFIG.get("POSITION_SIZE_LOW_CONF", 0.5)
+        
+        return base_risk * mult
+    
     def reset_position_tracking(self):
         """重置持仓追踪数据（新开仓时调用）"""
         self.position_peak_pnl = 0.0
         self.position_trailing_stop = 0.0
+        # 重置EVT追踪状态
+        self._evt_trailing_active = False
+        self._evt_trailing_peak = 0
     
     def check_spike_circuit_breaker(self, current_price: float) -> Tuple[bool, str]:
         """插针熔断检测 - 价格剧烈波动保护
@@ -814,8 +912,13 @@ class SignalGenerator:
                             confidence=self.ml_regime_result.confidence,
                             probabilities=getattr(self.ml_regime_result, 'probabilities', None)
                         )
-                        # 使用INFO级别输出到控制台
-                        print(f"\n{viz_output}")
+                        
+                        # ========== 日志优化：只有变化时才输出 ==========
+                        current_viz_key = f"{self.ml_regime_result.regime.name}_{int(self.ml_regime_result.confidence*10)}"
+                        if not hasattr(self, '_last_viz_key') or self._last_viz_key != current_viz_key:
+                            print(f"\n{viz_output}")
+                            self._last_viz_key = current_viz_key
+                        # else: 相同状态，跳过输出
                     except Exception as e:
                         logger.debug(f"V2可视化输出失败: {e}")
                 
@@ -916,7 +1019,7 @@ class SignalGenerator:
             )
         
         # 5. 趋势市：ML为主，必须顺势（核心修复）
-        ml_threshold = CONFIG.get("ML_CONFIDENCE_THRESHOLD", 0.56)
+        ml_threshold = CONFIG.get("ML_CONFIDENCE_THRESHOLD", 0.70)  # ML顺势阈值0.70
         ml_signal_blocked = False  # 标志：ML信号是否被阻止
         
         if ml_available and ml_confidence >= ml_threshold:
@@ -929,13 +1032,27 @@ class SignalGenerator:
             )
             
             if is_counter_trend:
-                # 逆势交易需要极高的置信度（抓回调/反弹）
-                counter_trend_threshold = CONFIG.get("COUNTER_TREND_ML_THRESHOLD", 0.98)
+                # 逆势交易需要高置信度（趋势市0.90，震荡市0.85）
+                counter_trend_threshold = CONFIG.get("COUNTER_TREND_ML_THRESHOLD_TREND", 0.90)
                 if ml_confidence < counter_trend_threshold:
                     # ML方向转文字
                     ml_dir_str = "看多" if ml_direction == 1 else "看空" if ml_direction == -1 else "观望"
-                    logger.info(f"[ML过滤] 逆势交易被阻止，尝试技术指标: {regime.value} + ML{ml_dir_str} "
-                               f"(置信度:{ml_confidence:.2f} < 阈值:{counter_trend_threshold})")
+                    
+                    # 日志优化：同一原因不重复输出，5分钟冷却期
+                    block_reason = f"逆势_{regime.value}_{ml_direction}"
+                    now = time.time()
+                    cooldown_secs = 300  # 5分钟
+                    
+                    last_reason = getattr(self, '_last_ml_block_reason', None)
+                    last_time = getattr(self, '_last_ml_block_time', 0)
+                    
+                    if last_reason != block_reason or (now - last_time) > cooldown_secs:
+                        logger.info(f"[ML过滤] 逆势交易被阻止，尝试技术指标: {regime.value} + ML{ml_dir_str} "
+                                   f"(置信度:{ml_confidence:.2f} < 阈值:{counter_trend_threshold})")
+                        self._last_ml_block_reason = block_reason
+                        self._last_ml_block_time = now
+                    else:
+                        logger.debug(f"[ML过滤] 逆势阻止中(同前): {regime.value} + ML{ml_dir_str}")
                     
                     # 关键修复：标记ML信号被阻止，跳过ML信号执行块
                     ml_signal_blocked = True
@@ -995,12 +1112,18 @@ class SignalGenerator:
                     {'ml_proba': ml_pred.get('proba'), 'is_counter_trend': is_counter_trend},
                     ml_direction=ml_direction,
                     ml_confidence=ml_confidence,
-                    ml_proba_short=ml_pred.get('proba', [0.5, 0.5])[0],
-                    ml_proba_long=ml_pred.get('proba', [0.5, 0.5])[1],
+                    ml_proba_short=ml_proba[0],
+                    ml_proba_long=ml_proba[1],
                     ml_threshold=counter_trend_threshold if is_counter_trend else ml_threshold,
                     is_counter_trend=is_counter_trend,
                     trend_direction=trend_direction
                 )
+                
+                # 确保ML信息正确设置（防止关键字参数未生效）
+                signal.ml_direction = ml_direction
+                signal.ml_confidence = ml_confidence
+                signal.ml_proba_short = ml_proba[0]
+                signal.ml_proba_long = ml_proba[1]
                 
                 # 应用市场辅助数据微调（非主导，仅轻微调整）
                 market_context = self._get_market_context()
@@ -1035,15 +1158,21 @@ class SignalGenerator:
             if tech_is_counter_trend:
                 logger.info(f"[技术指标过滤] 趋势市中拒绝逆势交易: {regime.value} + {action} | "
                            f"原因: {tech_signal['reason']}")
-                return TradingSignal(
+                signal = TradingSignal(
                     'HOLD', 0.5, SignalSource.TECHNICAL,
                     f'技术指标逆势被阻止({regime.value}+{action})',
-                    atr, regime=regime, funding_rate=funding_rate,
+                    atr, sl_price=0, tp_price=0, regime=regime, funding_rate=funding_rate,
                     ml_direction=ml_direction if 'ml_direction' in locals() else 0,
                     ml_confidence=ml_confidence if 'ml_confidence' in locals() else 0,
+                    ml_proba_short=ml_proba[0] if 'ml_proba' in locals() else 0.5,
+                    ml_proba_long=ml_proba[1] if 'ml_proba' in locals() else 0.5,
                     is_counter_trend=True,
                     trend_direction=regime.value
                 )
+                # 确保ML信息设置
+                signal.ml_direction = ml_direction if 'ml_direction' in locals() else 0
+                signal.ml_confidence = ml_confidence if 'ml_confidence' in locals() else 0
+                return signal
             
             # 构建详细日志
             trend_type = "顺势" if tech_is_with_trend else "震荡"
@@ -1057,8 +1186,11 @@ class SignalGenerator:
                 action, tech_signal['confidence'], SignalSource.TECHNICAL,
                 f"{tech_signal['reason']}({trend_type})",
                 atr, sl_price, tp_price, regime, funding_rate,
+                features={'ml_proba': [ml_proba[0], ml_proba[1]] if 'ml_proba' in locals() else [0.5, 0.5]},
                 ml_direction=ml_direction if 'ml_direction' in locals() else 0,
                 ml_confidence=ml_confidence if 'ml_confidence' in locals() else 0,
+                ml_proba_short=ml_proba[0] if 'ml_proba' in locals() else 0.5,
+                ml_proba_long=ml_proba[1] if 'ml_proba' in locals() else 0.5,
                 is_counter_trend=False,
                 trend_direction=regime.value
             )
@@ -1250,10 +1382,10 @@ class SignalGenerator:
         volume_ratio = current.get('volume_ratio', 1.0)
         
         funding_threshold = CONFIG.get("FUNDING_RATE_THRESHOLD", 0.001)
-        min_confidence = CONFIG.get("SIDEWAYS_MIN_CONFIDENCE", 0.65)  # 恢复原设置
+        min_confidence = CONFIG.get("SIDEWAYS_MIN_CONFIDENCE", 0.65)
         
-        # 逆势交易ML置信度门槛
-        counter_trend_ml_threshold = 0.95
+        # 逆势交易ML置信度门槛（震荡市0.85，趋势市0.90）
+        counter_trend_ml_threshold = CONFIG.get("COUNTER_TREND_ML_THRESHOLD_SIDEWAYS", 0.85)
         
         # 恢复原设置
         long_rsi_threshold = 40   # 原设置
@@ -1280,13 +1412,52 @@ class SignalGenerator:
             is_with_trend = (direction_bias in ['long', 'neutral'])
             is_counter_trend = (direction_bias == 'short')  # 震荡下行中做多是逆势
             
-            # 顺势交易：原条件
+            # 顺势交易：原条件 + 区间过滤 + 固定盈亏比
             if is_with_trend:
-                if (rsi_6 < 30 or volume_ratio > 1.2):  # 恢复原设置
+                if (rsi_6 < 30 or volume_ratio > 1.2):
                     if funding_rate < funding_threshold:
+                        # 区间位置过滤
+                        pos_allowed, pos_reason = self._check_daily_position_filter('BUY', close, df)
+                        if not pos_allowed:
+                            # 日志优化：不重复输出相同原因
+                            pos_block_key = f"BUY_{position_pct:.0f}"
+                            if not hasattr(self, '_last_pos_block_key') or self._last_pos_block_key != pos_block_key:
+                                logger.info(f"[位置过滤] 下轨做多被阻止: {pos_reason}")
+                                self._last_pos_block_key = pos_block_key
+                            return TradingSignal(
+                                'HOLD', min_confidence, SignalSource.TECHNICAL,
+                                f'{regime_label}-下轨做多被过滤({pos_reason})',
+                                atr, regime=MarketRegime.SIDEWAYS, funding_rate=funding_rate
+                            )
+                        
                         conf = max(min_confidence * long_conf_mult, ml_confidence if ml_available else 0)
-                        sl_price = close - atr * 1.5
-                        tp_price = bb_mid
+                        
+                        # 使用固定盈亏比计算SL/TP
+                        sl_price, tp_price = self._calculate_fixed_sl_tp(close, 'BUY', atr)
+                        
+                        # ========== 盈亏比检查（留痕）==========
+                        if CONFIG.get("ENABLE_RR_FILTER", True):
+                            risk = close - sl_price
+                            reward = tp_price - close
+                            rr_ratio = reward / risk if risk > 0 else 0
+                            min_rr = CONFIG.get("MIN_RR_RATIO", 2.0)
+                            rr_exemption = CONFIG.get("RR_FILTER_ML_EXEMPTION", 0.85)
+                            
+                            # 检查是否满足盈亏比或ML豁免
+                            if rr_ratio < min_rr and ml_confidence < rr_exemption:
+                                # 留痕：盈亏比不足且未豁免
+                                rr_block_key = f"RR_BUY_{rr_ratio:.1f}_{ml_confidence:.2f}"
+                                if not hasattr(self, '_last_rr_block_key') or self._last_rr_block_key != rr_block_key:
+                                    logger.info(f"[盈亏比过滤] 下轨做多被阻止: R:R=1:{rr_ratio:.2f}<{min_rr}, ML={ml_confidence:.2f}")
+                                    self._last_rr_block_key = rr_block_key
+                                return TradingSignal(
+                                    'HOLD', conf, SignalSource.TECHNICAL,
+                                    f'{regime_label}-盈亏比不足',
+                                    atr, regime=MarketRegime.SIDEWAYS, funding_rate=funding_rate
+                                )
+                            elif rr_ratio < min_rr and ml_confidence >= rr_exemption:
+                                # 留痕：ML豁免（较少发生，记录）
+                                logger.info(f"[盈亏比豁免] ML高置信度({ml_confidence:.2f})豁免R:R检查")
                         
                         return TradingSignal(
                             'BUY', conf, SignalSource.GRID,
@@ -1323,13 +1494,52 @@ class SignalGenerator:
             is_with_trend = (direction_bias in ['short', 'neutral'])
             is_counter_trend = (direction_bias == 'long')  # 震荡上行中做空是逆势
             
-            # 顺势交易：原条件
+            # 顺势交易：原条件 + 区间过滤 + 固定盈亏比
             if is_with_trend:
-                if (rsi_6 > 70 or volume_ratio > 1.2):  # 恢复原设置
+                if (rsi_6 > 70 or volume_ratio > 1.2):
                     if funding_rate > -funding_threshold:
+                        # 区间位置过滤
+                        pos_allowed, pos_reason = self._check_daily_position_filter('SELL', close, df)
+                        if not pos_allowed:
+                            # 日志优化：不重复输出相同原因
+                            pos_block_key = f"SELL_{position_pct:.0f}"
+                            if not hasattr(self, '_last_pos_block_key') or self._last_pos_block_key != pos_block_key:
+                                logger.info(f"[位置过滤] 上轨做空被阻止: {pos_reason}")
+                                self._last_pos_block_key = pos_block_key
+                            return TradingSignal(
+                                'HOLD', min_confidence, SignalSource.TECHNICAL,
+                                f'{regime_label}-上轨做空被过滤({pos_reason})',
+                                atr, regime=MarketRegime.SIDEWAYS, funding_rate=funding_rate
+                            )
+                        
                         conf = max(min_confidence * short_conf_mult, ml_confidence if ml_available else 0)
-                        sl_price = close + atr * 1.5
-                        tp_price = bb_mid
+                        
+                        # 使用固定盈亏比计算SL/TP
+                        sl_price, tp_price = self._calculate_fixed_sl_tp(close, 'SELL', atr)
+                        
+                        # ========== 盈亏比检查（留痕）==========
+                        if CONFIG.get("ENABLE_RR_FILTER", True):
+                            risk = sl_price - close
+                            reward = close - tp_price
+                            rr_ratio = reward / risk if risk > 0 else 0
+                            min_rr = CONFIG.get("MIN_RR_RATIO", 2.0)
+                            rr_exemption = CONFIG.get("RR_FILTER_ML_EXEMPTION", 0.85)
+                            
+                            # 检查是否满足盈亏比或ML豁免
+                            if rr_ratio < min_rr and ml_confidence < rr_exemption:
+                                # 留痕：盈亏比不足且未豁免
+                                rr_block_key = f"RR_SELL_{rr_ratio:.1f}_{ml_confidence:.2f}"
+                                if not hasattr(self, '_last_rr_block_key') or self._last_rr_block_key != rr_block_key:
+                                    logger.info(f"[盈亏比过滤] 上轨做空被阻止: R:R=1:{rr_ratio:.2f}<{min_rr}, ML={ml_confidence:.2f}")
+                                    self._last_rr_block_key = rr_block_key
+                                return TradingSignal(
+                                    'HOLD', conf, SignalSource.TECHNICAL,
+                                    f'{regime_label}-盈亏比不足',
+                                    atr, regime=MarketRegime.SIDEWAYS, funding_rate=funding_rate
+                                )
+                            elif rr_ratio < min_rr and ml_confidence >= rr_exemption:
+                                # 留痕：ML豁免（较少发生，记录）
+                                logger.info(f"[盈亏比豁免] ML高置信度({ml_confidence:.2f})豁免R:R检查")
                         
                         return TradingSignal(
                             'SELL', conf, SignalSource.GRID,
@@ -1921,6 +2131,63 @@ class SignalGenerator:
                 logger.info(f"[EVT未启用] 方法={evt_method} (需要EVT_GPD)")
         except Exception as e:
             logger.warning(f"[EVT异常] 计算跳过: {e}")
+        
+        # ========== 4.5 固定止盈+EVT追踪 (2026-03-27新增) ==========
+        if CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
+            fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%杠杆后
+            
+            # 超过固定止盈点后，启用EVT追踪
+            if pnl_pct >= fixed_tp_pct:
+                # 检查是否已创建追踪记录
+                if not hasattr(self, '_evt_trailing_active'):
+                    self._evt_trailing_active = False
+                    self._evt_trailing_peak = 0
+                
+                # 激活EVT追踪
+                if not self._evt_trailing_active:
+                    self._evt_trailing_active = True
+                    self._evt_trailing_peak = pnl_pct
+                    logger.info(f"[EVT追踪] 超过固定止盈{fixed_tp_pct*100:.2f}%，启动EVT追踪，当前{pnl_pct*100:.2f}%")
+                
+                # 更新峰值
+                if pnl_pct > self._evt_trailing_peak:
+                    self._evt_trailing_peak = pnl_pct
+                    logger.debug(f"[EVT追踪] 新峰值: {self._evt_trailing_peak*100:.2f}%")
+                
+                # 检查是否回退1.6%
+                evt_trailing_pct = CONFIG.get("EVT_TRAILING_PCT", 0.016) * leverage
+                if pnl_pct <= self._evt_trailing_peak - evt_trailing_pct:
+                    record = TPSignalRecord(
+                        timestamp=datetime.now(),
+                        position_id=f"{self.symbol}_{datetime.now().timestamp()}",
+                        symbol=self.symbol,
+                        side=position_side,
+                        entry_price=entry_price,
+                        exit_price=current_price,
+                        pnl_pct=pnl_pct,
+                        pnl_usdt=0,
+                        signal_type=TPSignalType.EVT_EXTREME,
+                        signal_description=f'EVT追踪止盈(峰值{self._evt_trailing_peak*100:.2f}%, 回退{evt_trailing_pct*100:.2f}%至{pnl_pct*100:.2f}%)',
+                        market_regime=regime.value,
+                        current_price=current_price
+                    )
+                    tp_manager.record_signal(record)
+                    
+                    # 重置追踪状态
+                    self._evt_trailing_active = False
+                    self._evt_trailing_peak = 0
+                    
+                    logger.info(f"🎯 [EVT追踪止盈] 峰值{self._evt_trailing_peak*100:.2f}%, 回退{evt_trailing_pct*100:.2f}%, 当前{pnl_pct*100:.2f}%")
+                    return TradingSignal(
+                        'CLOSE', 1.0, SignalSource.TECHNICAL,
+                        f'EVT追踪止盈(回退{evt_trailing_pct*100:.2f}%)',
+                        atr, regime=regime, funding_rate=funding_rate
+                    )
+            else:
+                # 未超过固定止盈点，重置追踪状态
+                if hasattr(self, '_evt_trailing_active') and self._evt_trailing_active:
+                    self._evt_trailing_active = False
+                    self._evt_trailing_peak = 0
         
         # ========== 5. 分级ATR止盈（后备）==========
         if regime == MarketRegime.SIDEWAYS:
@@ -3104,13 +3371,26 @@ class V12OptimizedTrader:
             trade_type = "顺势" if not signal.is_counter_trend else "⚠️逆势(高置信度)"
             ml_dir = "看多" if signal.ml_direction == 1 else "看空" if signal.ml_direction == -1 else "观望"
             
+            # 获取技术指标判断（用于日志显示）
+            try:
+                df_feat = MLFeatureEngineer().create_features(df)
+                if len(df_feat) > 0:
+                    current = df_feat.iloc[-1]
+                    tech_signal = self._technical_signal(df_feat, current, signal.regime)
+                    tech_info = f"{tech_signal['action']}({tech_signal['confidence']:.2f})"
+                else:
+                    tech_info = "N/A"
+            except Exception as e:
+                tech_info = f"获取失败:{str(e)[:20]}"
+            
             logger.info("="*70)
             logger.info(f"🚀 开仓执行 | {side} | {trade_type}")
             logger.info(f"   价格: ${price:.2f}")
             logger.info(f"   市场环境: {signal.regime.value} | 趋势: {signal.trend_direction}")
             logger.info(f"   ML判断: {ml_dir} (置信度:{signal.ml_confidence:.3f})")
             logger.info(f"   ML概率: 做空={signal.ml_proba_short:.3f}, 做多={signal.ml_proba_long:.3f}")
-            logger.info(f"   ML阈值: {signal.ml_threshold:.3f} (顺势:0.56,逆势:0.75)")
+            logger.info(f"   技术指标: {tech_info} | 原因: {tech_signal.get('reason', 'N/A')[:30]}")
+            logger.info(f"   ML阈值: {signal.ml_threshold:.3f} (顺势:0.70,逆势:0.85/0.90)")
             logger.info(f"   信号来源: {signal.source.value} | 原因: {signal.reason}")
             logger.info(f"   止损: ${signal.sl_price:.2f} | 止盈: ${signal.tp_price:.2f}")
             logger.info("="*70)
@@ -3137,10 +3417,35 @@ class V12OptimizedTrader:
                 return False
             
             # 计算仓位大小（传入市场环境）
-            qty = self.risk_mgr.calculate_position_size(
+            base_qty = self.risk_mgr.calculate_position_size(
                 balance, price, signal.atr, signal.confidence,
                 signal.regime
             )
+            
+            # ========== 动态仓位调整（按置信度，基于基础仓位）==========
+            if CONFIG.get("USE_DYNAMIC_POSITION_SIZE", False):
+                # 获取置信度倍数
+                mult = self.signal_gen._calculate_position_size(
+                    1.0,  # 传入1.0获取倍数
+                    signal.confidence,
+                    signal.regime
+                )
+                
+                # 基于基础仓位调整
+                adjusted_qty = base_qty * mult
+                
+                # 确保不超过风险限制
+                max_position_pct = CONFIG.get("POSITION_SIZE_PCT_MAX", 0.80)
+                max_qty = (balance * max_position_pct) / price
+                adjusted_qty = min(adjusted_qty, max_qty)
+                
+                if abs(adjusted_qty - base_qty) > 0.0001:  # 有显著变化才记录
+                    logger.info(f"[仓位调整] 基础:{base_qty:.4f} -> 调整后:{adjusted_qty:.4f} "
+                               f"(置信度:{signal.confidence:.2f}, 倍数:{mult:.2f}x)")
+                
+                qty = adjusted_qty
+            else:
+                qty = base_qty
             
             if qty < 0.001:
                 logger.warning(f"仓位计算结果过小: {qty}")
@@ -3419,15 +3724,28 @@ class V12OptimizedTrader:
                 entry_price=entry_px
             )
             
-            # 日志优化：交易周期信息只在状态变化或每30秒输出一次
+            # 日志优化：交易周期信息只在状态变化或每60秒输出一次
             entry_px_int = int(entry_px) if entry_px else 0
-            current_cycle_state = f"{has_pos}_{pos_side}_{entry_px_int}"
-            if not hasattr(self, '_last_cycle_state') or self._last_cycle_state != current_cycle_state or self.cycle_count % 30 == 0:
+            price_int = int(current_price)  # 价格整数部分用于比较
+            current_cycle_state = f"{has_pos}_{pos_side}_{entry_px_int}_{signal.regime.value if signal else 'unknown'}"
+            
+            # 加强过滤：状态变化 或 每60周期（约60秒）才输出
+            should_log_cycle = (
+                not hasattr(self, '_last_cycle_state') or 
+                self._last_cycle_state != current_cycle_state or 
+                self.cycle_count % 60 == 0
+            )
+            
+            if should_log_cycle:
                 if has_pos:
                     logger.info(f"[交易周期] 持仓={pos_side}, 入场={entry_px:.2f}, 价格={current_price:.2f}")
                 else:
+                    # 无持仓时简化输出，只显示关键信息
                     regime_val = signal.regime.value if signal and hasattr(signal, 'regime') else 'unknown'
-                    logger.info(f"[交易周期] 无持仓, 价格={current_price:.2f}, 环境={regime_val}")
+                    ml_dir = signal.ml_direction if signal and hasattr(signal, 'ml_direction') else 0
+                    ml_conf = signal.ml_confidence if signal and hasattr(signal, 'ml_confidence') else 0
+                    ml_str = f"ML{'多' if ml_dir==1 else '空' if ml_dir==-1 else '观'}({ml_conf:.2f})" if ml_dir != 0 else ""
+                    logger.info(f"[交易周期] 无持仓, 价格={current_price:.2f}, 环境={regime_val} {ml_str}")
                 self._last_cycle_state = current_cycle_state
             
             # 记录信号 - 交易信号立即记录，HOLD信号每15秒记录一次
@@ -3523,13 +3841,61 @@ class V12OptimizedTrader:
                 time.sleep(poll_interval)
                 
             except KeyboardInterrupt:
-                logger.info("🛑 收到停止信号")
+                logger.info("🛑 收到停止信号 (Ctrl+C)")
+                
                 if self.position:
-                    price = self.api.get_price(self.symbol)
-                    self.execute_close(
-                        TradingSignal('CLOSE', 1.0, SignalSource.TECHNICAL, '程序退出'),
-                        price, "程序退出"
-                    )
+                    # 显示持仓信息
+                    pos_side = self.position['side']
+                    pos_qty = self.position['qty']
+                    entry_price = self.position['entry_price']
+                    current_price = self.api.get_price(self.symbol)
+                    
+                    # 计算盈亏
+                    is_short = pos_side in ['SELL', 'SHORT']
+                    if is_short:
+                        pnl_pct = (entry_price - current_price) / entry_price
+                    else:
+                        pnl_pct = (current_price - entry_price) / entry_price
+                    leverage = CONFIG.get('LEVERAGE', 5)
+                    pnl_leverage = pnl_pct * leverage
+                    
+                    print("\n" + "="*60)
+                    print("⚠️  程序退出确认")
+                    print("="*60)
+                    print(f"当前持仓: {pos_side} {pos_qty} ETH @ ${entry_price:.2f}")
+                    print(f"当前价格: ${current_price:.2f}")
+                    print(f"当前盈亏: {pnl_leverage*100:+.2f}%")
+                    print("-"*60)
+                    
+                    # 询问用户是否平仓
+                    try:
+                        user_input = input("是否平仓后退出? [Y/n] (默认Y): ").strip().lower()
+                        
+                        if user_input in ['', 'y', 'yes']:
+                            # 用户确认平仓
+                            logger.info("用户确认: 平仓后退出")
+                            self.execute_close(
+                                TradingSignal('CLOSE', 1.0, SignalSource.TECHNICAL, '程序退出'),
+                                current_price, "程序退出-用户确认"
+                            )
+                            print("✅ 已平仓，程序退出")
+                        else:
+                            # 用户选择不平仓
+                            logger.info("用户选择: 不平仓直接退出")
+                            print("⚠️ 持仓未平，程序直接退出")
+                            print(f"   持仓保留: {pos_side} {pos_qty} ETH @ ${entry_price:.2f}")
+                    except EOFError:
+                        # 非交互式环境(如脚本)，默认平仓
+                        logger.info("非交互式环境，自动平仓后退出")
+                        self.execute_close(
+                            TradingSignal('CLOSE', 1.0, SignalSource.TECHNICAL, '程序退出'),
+                            current_price, "程序退出-自动平仓"
+                        )
+                        print("✅ 自动平仓，程序退出")
+                else:
+                    print("\n✅ 无持仓，程序退出")
+                
+                logger.info("程序正常退出")
                 break
             
             except Exception as e:
