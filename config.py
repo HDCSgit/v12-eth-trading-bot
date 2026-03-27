@@ -213,6 +213,12 @@ CONFIG = {
     "ML_REGIME_V2_ENABLE_UNCERTAINTY": True,
     "ML_REGIME_V2_ENABLE_VISUALIZATION": True,  # 🆕 启用控制台可视化
     
+    # 🆕 V2模型自动重训练配置
+    "ML_REGIME_V2_AUTO_RETRAIN": True,           # 启用自动重训练
+    "ML_REGIME_V2_RETRAIN_INTERVAL_HOURS": 6,    # 每6小时重训练一次（ETH波动大）
+    "ML_REGIME_V2_RETRAIN_MIN_SAMPLES": 1000,    # 最少需要1000条新数据才训练
+    "ML_REGIME_V2_HOT_SWAP": True,               # 训练完成后热更新模型（不重启）
+    
     # 子功能开关（仅在总开关为True时生效）
     "ML_REGIME_OVERRIDE_ENABLED": True,   # 允许ML覆盖技术环境判断
     "ML_REGIME_ADJUST_POSITION": True,    # 允许ML调整仓位倍数
