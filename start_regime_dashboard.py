@@ -243,7 +243,12 @@ class RegimeDashboard:
         print(f"\n🚀 启动V2市场环境仪表盘")
         print(f"   访问地址: http://localhost:{port}")
         print(f"   按 Ctrl+C 停止\n")
-        self.app.run_server(debug=debug, port=port)
+        # 兼容新旧版本Dash
+        try:
+            self.app.run(debug=debug, port=port, jupyter_mode='external')
+        except TypeError:
+            # 旧版本
+            self.app.run_server(debug=debug, port=port)
 
 
 def main():
