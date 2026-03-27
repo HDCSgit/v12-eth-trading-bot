@@ -211,6 +211,7 @@ CONFIG = {
     "ML_REGIME_V2_MODEL_PATH": "models/regime_xgb_v1.pkl",
     "ML_REGIME_V2_CONFIDENCE_THRESHOLD": 0.65,
     "ML_REGIME_V2_ENABLE_UNCERTAINTY": True,
+    "ML_REGIME_V2_ENABLE_VISUALIZATION": True,  # 🆕 启用控制台可视化
     
     # 子功能开关（仅在总开关为True时生效）
     "ML_REGIME_OVERRIDE_ENABLED": True,   # 允许ML覆盖技术环境判断

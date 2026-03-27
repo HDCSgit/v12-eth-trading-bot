@@ -37,6 +37,13 @@ import requests
 # 重构新增：出场信号系统 (2026-03-24)
 from refactor_integration import ExitSignalAdapter, get_exit_adapter
 
+# 🆕 V2市场环境检测可视化
+try:
+    from market_regime_v2.console_visualizer import ConsoleVisualizer
+    V2_VISUALIZER_AVAILABLE = True
+except ImportError:
+    V2_VISUALIZER_AVAILABLE = False
+
 # ==================== 配置日志 ====================
 import sys
 import io
@@ -576,6 +583,17 @@ class SignalGenerator:
         self.ml_regime_result = None
         self.ml_adjustments = None  # 存储ML环境调整参数
         
+        # 🆕 V2可视化器
+        self.v2_visualizer = None
+        if (V2_VISUALIZER_AVAILABLE and 
+            CONFIG.get("ML_REGIME_VERSION") == "v2" and
+            CONFIG.get("ML_REGIME_V2_ENABLE_VISUALIZATION", True)):
+            try:
+                self.v2_visualizer = ConsoleVisualizer(use_color=True)
+                logger.info("🎨 V2市场环境可视化已启用")
+            except Exception as e:
+                logger.debug(f"V2可视化初始化失败: {e}")
+        
         if self.ml_regime_enabled:
             try:
                 from ml_regime_detector import MLRegimeDetector
@@ -785,6 +803,21 @@ class SignalGenerator:
                 logger.debug(f"[ML环境] 检测={self.ml_regime_result.regime.name}, "
                            f"建议={self.ml_regime_result.recommended_action}, "
                            f"仓位倍数={ml_adjustments['position_mult']}")
+                
+                # 🆕 V2可视化输出（如果启用V2且配置允许）
+                if (CONFIG.get("ML_REGIME_VERSION") == "v2" and 
+                    self.v2_visualizer and
+                    CONFIG.get("ML_REGIME_V2_ENABLE_VISUALIZATION", True)):
+                    try:
+                        viz_output = self.v2_visualizer.format_regime_bar(
+                            regime=self.ml_regime_result.regime.name,
+                            confidence=self.ml_regime_result.confidence,
+                            probabilities=getattr(self.ml_regime_result, 'probabilities', None)
+                        )
+                        # 使用INFO级别输出到控制台
+                        print(f"\n{viz_output}")
+                    except Exception as e:
+                        logger.debug(f"V2可视化输出失败: {e}")
                 
                 # 存储ML调整参数供后续使用
                 self.ml_adjustments = ml_adjustments
