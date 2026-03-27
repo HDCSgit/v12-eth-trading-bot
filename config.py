@@ -27,7 +27,7 @@ PROXY = os.getenv("PROXY", None)  # 例如: http://127.0.0.1:7897
 CONFIG = {
     # ---------- 交易对和时间 ----------
     "SYMBOLS": ["ETHUSDT"],           # 交易对列表，可添加 BTCUSDT/SOLUSDT
-    "INTERVAL": "1m",                  # K线周期: 1m, 5m, 15m, 1h
+    "INTERVAL": "15m",                 # K线周期: 已从1m迁移到15m (2026-03-24)
     
     # ---------- 杠杆和模式 ----------
     "LEVERAGE": 5,                     # 杠杆倍数(1-125)，建议5-10倍
@@ -48,7 +48,7 @@ CONFIG = {
     "MAX_DD_LIMIT": 0.15,              # 最大回撤15%，触发熔断
     
     # 单笔风控
-    "MAX_RISK_PCT": 0.03,              # 单笔基础风险3%（核心参数）
+    "MAX_RISK_PCT": 0.025,             # 单笔基础风险2.5%（从3%降低，更稳健）
                                        # 作用：控制每笔交易的最大亏损
                                        # 边界：建议1%-5%，太小难以开仓，太大风险高
     
@@ -62,18 +62,22 @@ CONFIG = {
     # ==========================================
     
     # ML模型参数
-    "ML_CONFIDENCE_THRESHOLD": 0.65,   # ML信号门槛(0.5-0.8)
+    "ML_CONFIDENCE_THRESHOLD": 0.55,   # ML顺势信号门槛(提高到0.55，过滤低质量信号)
+                                       # 更新日期：2026-03-24，原因：胜率过低10%
+                                       # 旧值：0.65，新值：0.80
                                        # 作用：过滤低质量信号
                                        # 边界：0.5=所有信号，0.8=仅高确信
-    "ML_MIN_TRAINING_SAMPLES": 30,     # ML训练最小样本数
-    "ML_TRAINING_INTERVAL_HOURS": 4,   # ML重新训练间隔(小时)
+    "ML_MIN_TRAINING_SAMPLES": 200,    # 15分钟框架: 增加样本要求
+                                       # 更新日期：2026-03-24
+                                       # 旧值：30，新值：100
+    "ML_TRAINING_INTERVAL_HOURS": 6,   # 15分钟框架: 6小时重新训练
     "ML_LABEL_THRESHOLD": 0.0015,      # ML标签阈值(0.15%收益)
     
     # 技术指标参数
     "TECH_RSI_OVERSOLD": 30,           # RSI超卖阈值
     "TECH_RSI_OVERBOUGHT": 70,         # RSI超买阈值
     "TECH_BB_WIDTH_THRESHOLD": 0.05,   # 布林带宽度阈值(判断震荡)
-    "TECH_ADX_TREND_THRESHOLD": 25,    # ADX趋势强度阈值
+    "TECH_ADX_TREND_THRESHOLD": 23,    # ADX趋势强度阈值(23，平衡敏感度和准确度)
     
     # 网格策略参数
     "GRID_BB_LOWER_MULT": 1.01,        # 布林带下轨倍数
@@ -83,13 +87,15 @@ CONFIG = {
     
     # 震荡市专用参数（新增）
     "SIDEWAYS_MIN_BB_WIDTH": 0.03,     # 最小布林带宽度（过滤假震荡）
-    "SIDEWAYS_MIN_CONFIDENCE": 0.70,   # 震荡市最低置信度（提高门槛）
+    "SIDEWAYS_MIN_CONFIDENCE": 0.80,   # 震荡市最低置信度（进一步提高门槛）
+                                       # 更新日期：2026-03-24，原因：胜率过低10%
+                                       # 旧值：0.70，新值：0.80
     "SIDEWAYS_MIN_VOLUME_RATIO": 1.2,  # 震荡市最小成交量倍数
     "SIDEWAYS_STOP_LOSS_ATR_MULT": 1.35, # 震荡市专用止损倍数（1.5*0.9）
     "SIDEWAYS_COOLDOWN_MULT": 1.5,     # 震荡市冷却期倍数（更谨慎）
     
     # 新增市场环境参数
-    "COUNTER_TREND_ML_THRESHOLD": 0.85,  # 逆势交易所需ML置信度（提高到0.85）
+    "COUNTER_TREND_ML_THRESHOLD": 0.98,  # 逆势交易所需ML置信度（提高到0.98，几乎完全禁止逆势交易）
     "BREAKOUT_MIN_VOLUME": 1.5,          # 突破最小成交量倍数
     "BREAKDOWN_RSI_THRESHOLD": 20,       # 暴跌市RSI极度超卖阈值
     "PUMP_RSI_THRESHOLD": 80,            # 暴涨市RSI极度超买阈值
@@ -103,9 +109,10 @@ CONFIG = {
     # ==========================================
     
     # 止损参数
-    "STOP_LOSS_ATR_MULT": 1.5,         # 止损倍数(×ATR)，收紧止损
-                                       # 作用：控制单笔最大亏损
-                                       # 边界：1.5=紧，2.0=标准，2.5=松
+    "STOP_LOSS_ATR_MULT": 1.5,         # 15分钟框架: 1.5x ATR (15分钟ATR更大)
+                                       # 作用：控制单笔最大亏损，减少假止损
+                                       # 边界：1.5=紧(旧)，2.0=标准(新)，2.5=松
+                                       # 更新日期：2026-03-24，原因：胜率过低10%
     "STOP_LOSS_MIN_PCT": 0.008,        # 最小止损0.8%
     
     # 止盈参数 - 分市场环境
@@ -132,7 +139,7 @@ CONFIG = {
     "COOLDOWN_MID_CONFIDENCE": 30,     # 置信度0.65-0.75
     "COOLDOWN_LOW_CONFIDENCE": 45,     # 置信度<0.65
     "COOLDOWN_MAX_SECONDS": 120,       # 最高封顶120秒（增加）
-    "COOLDOWN_AFTER_LOSS": 60,         # 亏损后60秒冷静期
+    "COOLDOWN_AFTER_LOSS": 60,         # 止损后60秒冷却期(止盈后无冷却)
     
     # 信号来源调整系数
     "COOLDOWN_ML_FACTOR": 0.8,         # ML信号更快(×0.8)
@@ -158,7 +165,7 @@ CONFIG = {
     # ==========================================
     
     # 置信度对应的仓位倍数（非线性分级）
-    "CONFIDENCE_MULT_EXTREME": 3.0,    # ≥0.80: 3倍仓位
+    "CONFIDENCE_MULT_EXTREME": 2.5,    # ≥0.80: 2.5倍仓位(从3.0降低)
     "CONFIDENCE_MULT_HIGH": 2.0,       # 0.70-0.80: 2倍仓位
     "CONFIDENCE_MULT_MID": 1.2,        # 0.60-0.70: 1.2倍仓位
     "CONFIDENCE_MULT_LOW": 0.6,        # 0.55-0.60: 0.6倍仓位
@@ -192,6 +199,46 @@ CONFIG = {
     
     "LOG_LEVEL": "INFO",               # DEBUG/INFO/WARNING/ERROR
     "DB_PATH": "v12_optimized.db",     # 数据库路径
+    
+    # ==========================================
+    # ML环境检测模块 (新增 2026-03-27)
+    # ==========================================
+    # 总开关：一键关停所有ML环境相关功能
+    "ML_REGIME_ENABLED": True,  # False = 完全停用，回退到纯技术指标
+    
+    # ⭐ V2 新增: XGBoost市场环境检测版本选择
+    "ML_REGIME_VERSION": "v2",  # "v1" = 规则版本, "v2" = XGBoost模型版本
+    "ML_REGIME_V2_MODEL_PATH": "models/regime_xgb_v1.pkl",
+    "ML_REGIME_V2_CONFIDENCE_THRESHOLD": 0.65,
+    "ML_REGIME_V2_ENABLE_UNCERTAINTY": True,
+    
+    # 子功能开关（仅在总开关为True时生效）
+    "ML_REGIME_OVERRIDE_ENABLED": True,   # 允许ML覆盖技术环境判断
+    "ML_REGIME_ADJUST_POSITION": True,    # 允许ML调整仓位倍数
+    "ML_REGIME_ADJUST_EXECUTION": True,   # 允许ML影响下单方式
+    
+    # 故障自动保护
+    "ML_REGIME_AUTO_DISABLE_ON_ERROR": True,  # 出故障时自动关停
+    
+    # V1 规则版本检测参数（V2不需要这些）
+    "ML_REGIME_HISTORY_SIZE": 10,
+    "ML_STRONG_TREND_CONFIDENCE": 0.75,
+    "ML_STRONG_TREND_PROBA": 0.70,
+    "ML_SIDEWAYS_MAX_CONFIDENCE": 0.60,
+    "ML_SIDEWAYS_PROBA_DIFF": 0.20,
+    
+    # ==========================================
+    # 限价单配置 (优化版 2026-03-27)
+    # ==========================================
+    # 策略：震荡市用Maker省费率，趋势市用Taker确保成交
+    # 优化：IOC订单+短等待，避免长时间延迟
+    "USE_LIMIT_ORDER": True,           # 启用智能限价单
+    "LIMIT_PRICE_OFFSET": 0.0001,      # 0.01%偏离（轻微偏离，成交概率高）
+    "LIMIT_WAIT_TIME": 1.0,            # 只等1秒（之前3秒太长）
+    "LIMIT_ORDER_REGIMES": ["SIDEWAYS", "震荡上涨", "震荡下跌"],  # 只在震荡市用限价单
+    # 趋势市直接用Taker，不在此列表
+    "LIMIT_RETRY_MAX": 2,              # 限价单最大重试次数
+    "LIMIT_WAIT_TIME": 0.8,            # 每次等待时间(秒)，应与POLL_INTERVAL一致
     
     # ==========================================
     # 参数调优指南
