@@ -237,15 +237,48 @@ CONFIG = {
     # ==========================================
     # 限价单配置 (优化版 2026-03-27)
     # ==========================================
-    # 策略：震荡市用Maker省费率，趋势市用Taker确保成交
-    # 优化：IOC订单+短等待，避免长时间延迟
-    "USE_LIMIT_ORDER": True,           # 启用智能限价单
-    "LIMIT_PRICE_OFFSET": 0.0001,      # 0.01%偏离（轻微偏离，成交概率高）
-    "LIMIT_WAIT_TIME": 1.0,            # 只等1秒（之前3秒太长）
-    "LIMIT_ORDER_REGIMES": ["SIDEWAYS", "震荡上涨", "震荡下跌"],  # 只在震荡市用限价单
-    # 趋势市直接用Taker，不在此列表
-    "LIMIT_RETRY_MAX": 2,              # 限价单最大重试次数
-    "LIMIT_WAIT_TIME": 0.8,            # 每次等待时间(秒)，应与POLL_INTERVAL一致
+    # 全部使用Taker市价单，确保快速成交
+    "USE_LIMIT_ORDER": False,          # 禁用限价单，全部使用市价单
+    "LIMIT_PRICE_OFFSET": 0.0001,      # 保留配置但无效
+    "LIMIT_WAIT_TIME": 0.0,            # 不等待
+    "LIMIT_ORDER_REGIMES": [],         # 空列表=不使用限价单
+    "LIMIT_RETRY_MAX": 0,              # 不重试
+    "TAKER_ONLY": True,                # 强制全部Taker
+    
+    # ==========================================
+    # 增量优化配置 (2026-03-27)
+    # ==========================================
+    
+    # 当日价格区间过滤 - 防止在中部位置入场
+    "ENABLE_DAILY_POSITION_FILTER": True,  # 启用当日区间过滤
+    "DAILY_POSITION_SHORT_MIN": 0.70,      # 做空需在当日70%分位以上（高位）
+    "DAILY_POSITION_LONG_MAX": 0.30,       # 做多需在当日30%分位以下（低位）
+    
+    # 盈亏比过滤（除非ML高置信度才豁免）
+    "ENABLE_RR_FILTER": True,              # 启用盈亏比过滤
+    "MIN_RR_RATIO": 2.0,                   # 最小盈亏比1:2
+    "RR_FILTER_ML_EXEMPTION": 0.85,        # ML置信度>0.85可豁免盈亏比过滤
+    
+    # 固定盈亏比 + EVT追踪止盈
+    "USE_FIXED_RR_WITH_EVT": True,         # 启用固定盈亏比+EVT追踪
+    "FIXED_STOP_PCT": 0.008,               # 固定止损 0.8%
+    "FIXED_TP_PCT": 0.016,                 # 固定止盈 1.6%
+    "EVT_TRAILING_AFTER_TP": True,         # 达到1.6%后启用EVT追踪
+    "EVT_TRAILING_PCT": 0.016,             # 回退1.6%止盈
+    
+    # ML阈值调整
+    "ML_CONFIDENCE_THRESHOLD": 0.70,       # ML顺势入场阈值(原为0.56)
+    "COUNTER_TREND_ML_THRESHOLD_SIDEWAYS": 0.85,  # 震荡市逆势阈值
+    "COUNTER_TREND_ML_THRESHOLD_TREND": 0.90,     # 趋势市逆势阈值
+    
+    # 动态仓位（仅按置信度调整，不按环境简化）
+    "USE_DYNAMIC_POSITION_SIZE": True,     # 启用动态仓位
+    "POSITION_SIZE_BASE_RISK": 0.025,      # 基础风险2.5%
+    "POSITION_SIZE_HIGH_CONF": 1.5,        # 高置信度(>0.75)倍数
+    "POSITION_SIZE_MID_CONF": 1.0,         # 中等置信度(0.60-0.75)倍数
+    "POSITION_SIZE_LOW_CONF": 0.5,         # 低置信度(<0.60)倍数
+    "POSITION_SIZE_HIGH_THRESHOLD": 0.75,  # 高置信度阈值
+    "POSITION_SIZE_LOW_THRESHOLD": 0.60,   # 低置信度阈值
     
     # ==========================================
     # 参数调优指南

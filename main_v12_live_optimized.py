@@ -3367,16 +3367,6 @@ class V12OptimizedTrader:
             
             side = signal.action  # BUY or SELL
             
-            # ========== ML环境禁止开仓检查 ==========
-            # 从 SignalGenerator 获取 ML 调整参数
-            ml_adjustments = getattr(self.signal_gen, 'ml_adjustments', None)
-            ml_regime_result = getattr(self.signal_gen, 'ml_regime_result', None)
-            if ml_adjustments and ml_adjustments.get('block_new_position', False):
-                if side in ['BUY', 'SELL']:
-                    regime_name = ml_regime_result.regime.name if ml_regime_result else 'Unknown'
-                    logger.warning(f"[开仓拦截] ML环境禁止新开仓: {regime_name}")
-                    return False
-            
             # 构建详细的交易日志
             trade_type = "顺势" if not signal.is_counter_trend else "⚠️逆势(高置信度)"
             ml_dir = "看多" if signal.ml_direction == 1 else "看空" if signal.ml_direction == -1 else "观望"
