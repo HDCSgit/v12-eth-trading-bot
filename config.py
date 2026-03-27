@@ -257,7 +257,7 @@ CONFIG = {
     # 盈亏比过滤（除非ML高置信度才豁免）
     "ENABLE_RR_FILTER": True,              # 启用盈亏比过滤
     "MIN_RR_RATIO": 2.0,                   # 最小盈亏比1:2
-    "RR_FILTER_ML_EXEMPTION": 0.85,        # ML置信度>0.85可豁免盈亏比过滤
+    "RR_FILTER_ML_EXEMPTION": 1.0,         # [已禁用] 设为1.0使豁免永不可达，盈亏比必须严格满足
     
     # 纯固定止盈止损（最简单可靠）
     "USE_FIXED_RR_WITH_EVT": False,        # 禁用EVT追踪
