@@ -259,12 +259,11 @@ CONFIG = {
     "MIN_RR_RATIO": 2.0,                   # 最小盈亏比1:2
     "RR_FILTER_ML_EXEMPTION": 0.85,        # ML置信度>0.85可豁免盈亏比过滤
     
-    # 固定盈亏比 + EVT追踪止盈
-    "USE_FIXED_RR_WITH_EVT": True,         # 启用固定盈亏比+EVT追踪
+    # 纯固定止盈止损（最简单可靠）
+    "USE_FIXED_RR_WITH_EVT": False,        # 禁用EVT追踪
     "FIXED_STOP_PCT": 0.008,               # 固定止损 0.8%
     "FIXED_TP_PCT": 0.016,                 # 固定止盈 1.6%
-    "EVT_TRAILING_AFTER_TP": True,         # 达到1.6%后启用EVT追踪
-    "EVT_TRAILING_PCT": 0.016,             # 回退1.6%止盈
+    "PURE_FIXED_TP": True,                 # 启用纯固定止盈（超过即平）
     
     # ML阈值调整
     "ML_CONFIDENCE_THRESHOLD": 0.70,       # ML顺势入场阈值(原为0.56)

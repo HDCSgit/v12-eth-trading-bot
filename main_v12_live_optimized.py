@@ -2066,108 +2066,36 @@ class SignalGenerator:
                 atr, regime=regime, funding_rate=funding_rate
             )
         
-        # ========== 4. EVT极值止盈（新增）==========
-        try:
-            from evt_take_profit import get_evt_engine
-            evt_engine = get_evt_engine()
-            
-            # 更新参数（传入收益率序列，不是价格）
-            returns = df['close'].pct_change().dropna()
-            if len(returns) >= 100:
-                evt_engine.update_parameters(returns)
-            else:
-                logger.info(f"[EVT跳过] 数据不足: {len(returns)} < 100")
-            
-            # 计算EVT止盈位（默认置信度0.90，平衡目标）
-            tp_return, evt_info = evt_engine.calculate_tp_level(
-                side='SHORT' if is_short else 'LONG',
-                confidence=0.90,
-                regime=regime.value
+        # ========== 4. 纯固定止盈（最简单可靠）==========
+        fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%杠杆后
+        
+        if pnl_pct >= fixed_tp_pct:
+            record = TPSignalRecord(
+                timestamp=datetime.now(),
+                position_id=f"{self.symbol}_{datetime.now().timestamp()}",
+                symbol=self.symbol,
+                side=position_side,
+                entry_price=entry_price,
+                exit_price=current_price,
+                pnl_pct=pnl_pct,
+                pnl_usdt=0,
+                signal_type=TPSignalType.ATR_FIXED_TREND,  # 复用类型
+                signal_description=f'固定止盈触发(目标{fixed_tp_pct*100:.2f}%)',
+                market_regime=regime.value,
+                current_price=current_price
             )
+            tp_manager.record_signal(record)
             
-            # 调试日志：显示EVT计算结果
-            evt_method = evt_info.get('method', 'unknown')
-            evt_shape = evt_info.get('shape', 0)
-            evt_confidence = evt_info.get('confidence', 0)
-            # EVT日志优化：只在目标变化或接近触发时输出
-            evt_key = f"{tp_return:.4f}_{evt_shape:.2f}"
-            if not hasattr(self, '_last_evt_key') or self._last_evt_key != evt_key:
-                logger.info(f"[EVT更新] 目标={tp_return*100:.2f}%, ξ={evt_shape:.3f}")
-                self._last_evt_key = evt_key
-            elif pnl_pct >= tp_return * 0.7:  # 接近目标时输出
-                logger.debug(f"[EVT检查] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
-            
-            if evt_method == 'EVT_GPD':
-                fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%
-                
-                if CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
-                    # 方案B1修正: 两阶段固定目标
-                    # 初始化高目标存储
-                    if not hasattr(self, '_evt_high_target'):
-                        self._evt_high_target = 0
-                    
-                    if pnl_pct < fixed_tp_pct:
-                        # 阶段1: 未达1.6%，目标=1.6%
-                        tp_return = fixed_tp_pct
-                        self._evt_high_target = 0  # 重置高目标
-                        phase = "阶段1(目标1.6%)"
-                    else:
-                        # 阶段2: 已超过1.6%，计算并锁定高目标
-                        if self._evt_high_target == 0:
-                            # 首次进入阶段2，计算高目标并锁定
-                            # 高目标 = max(EVT原始, 1.6%*1.5=2.4%, 当前盈利+0.3%缓冲)
-                            self._evt_high_target = max(
-                                tp_return, 
-                                fixed_tp_pct * 1.5,
-                                pnl_pct + 0.003 * leverage  # 当前盈利+0.3%缓冲
-                            )
-                            logger.info(f"[EVT-阶段2锁定] 高目标={self._evt_high_target*100:.2f}%, 当前={pnl_pct*100:.2f}%")
-                        tp_return = self._evt_high_target
-                        phase = "阶段2(锁定高目标)"
-                    
-                    # 日志优化：只在目标变化时输出
-                    if not hasattr(self, '_last_evt_target'):
-                        self._last_evt_target = 0
-                    if abs(self._last_evt_target - tp_return) > 0.001:
-                        logger.info(f"[EVT-{phase}] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
-                        self._last_evt_target = tp_return
-                
-                if pnl_pct >= tp_return:
-                    record = TPSignalRecord(
-                        timestamp=datetime.now(),
-                        position_id=f"{self.symbol}_{datetime.now().timestamp()}",
-                        symbol=self.symbol,
-                        side=position_side,
-                        entry_price=entry_price,
-                        exit_price=current_price,
-                        pnl_pct=pnl_pct,
-                        pnl_usdt=0,
-                        signal_type=TPSignalType.EVT_EXTREME,
-                        signal_description=f'EVT高目标止盈(目标{tp_return*100:.2f}%)',
-                        market_regime=regime.value,
-                        current_price=current_price,
-                        evt_shape=evt_info.get('shape'),
-                        evt_scale=evt_info.get('scale'),
-                        evt_threshold=evt_info.get('threshold'),
-                        evt_confidence=evt_info.get('confidence'),
-                        evt_expected_return=evt_info.get('final_return'),
-                        evt_safety_factor=evt_info.get('safety_factor')
-                    )
-                    tp_manager.record_signal(record)
-                    
-                    phase_str = "高目标" if pnl_pct >= fixed_tp_pct * 1.2 else "基础"
-                    logger.info(f"🎯 [EVT{phase_str}止盈] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
-                    return TradingSignal(
-                        'CLOSE', 1.0, SignalSource.TECHNICAL,
-                        f'EVT{phase_str}止盈({pnl_pct*100:.2f}%, 目标{tp_return*100:.2f}%)',
-                        atr, regime=regime, funding_rate=funding_rate
-                    )
-                else:
-                    logger.debug(f"[EVT未触发] 盈利{pnl_pct*100:.2f}% < 目标{tp_return*100:.2f}%")
-            else:
-                logger.info(f"[EVT未启用] 方法={evt_method} (需要EVT_GPD)")
-        except Exception as e:
-            logger.warning(f"[EVT异常] 计算跳过: {e}")
+            logger.info(f"🎯 [固定止盈] 目标={fixed_tp_pct*100:.2f}%, 当前={pnl_pct*100:.2f}%, 超过即平")
+            return TradingSignal(
+                'CLOSE', 1.0, SignalSource.TECHNICAL,
+                f'固定止盈({pnl_pct*100:.2f}%)',
+                atr, regime=regime, funding_rate=funding_rate
+            )
+        else:
+            # 接近目标时输出日志
+            if pnl_pct >= fixed_tp_pct * 0.8:
+                logger.info(f"[固定止盈接近] 目标={fixed_tp_pct*100:.2f}%, 当前={pnl_pct*100:.2f}%, 还差{(fixed_tp_pct-pnl_pct)*100:.2f}%")
         
         # ========== 5. 分级ATR止盈（后备）==========
         if regime == MarketRegime.SIDEWAYS:
