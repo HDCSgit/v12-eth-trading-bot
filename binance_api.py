@@ -277,6 +277,13 @@ class BinanceExpertAPI:
         下单（市场单）
         参考: https://binance-docs.github.io/apidocs/futures/cn/#trade-3
         """
+        # 🔧 修复: 严格校验 side 参数
+        if side not in ['BUY', 'SELL']:
+            logger.error(f"[BUG] Invalid side parameter: {side!r} (type: {type(side).__name__}). Stack trace:")
+            import traceback
+            logger.error(traceback.format_stack())
+            return None
+        
         # 本地模拟模式
         if CONFIG["MODE"] == "PAPER":
             logger.info(f"[PAPER] 模拟下单: {side} {qty} {symbol}")
@@ -317,10 +324,66 @@ class BinanceExpertAPI:
         
         return result
 
+    def place_limit_order(self, symbol: str, side: str, qty: float, price: float, 
+                          time_in_force: str = "GTC", reduce_only: bool = False) -> Optional[Dict]:
+        """
+        限价单下单（用于顺势挂单）
+        
+        Args:
+            symbol: 交易对
+            side: BUY/SELL
+            qty: 数量
+            price: 限价价格
+            time_in_force: GTC( Good Till Cancel ), IOC( Immediate Or Cancel ), FOK( Fill Or Kill )
+            reduce_only: 仅减仓
+        """
+        if CONFIG["MODE"] == "PAPER":
+            logger.info(f"[PAPER] 模拟限价单: {side} {qty} {symbol} @ ${price:.2f}")
+            return {"orderId": f"paper_limit_{int(time.time()*1000)}", "symbol": symbol, 
+                    "side": side, "qty": qty, "price": price}
+        
+        if CONFIG["MODE"] != "LIVE":
+            logger.error(f"未知的交易模式: {CONFIG['MODE']}")
+            return None
+        
+        if qty < 0.001:
+            logger.error(f"订单数量太小: {qty}")
+            return None
+        
+        qty_formatted = f"{qty:.3f}"
+        price_formatted = f"{price:.2f}"
+        
+        params = {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT",
+            "quantity": qty_formatted,
+            "price": price_formatted,
+            "timeInForce": time_in_force,
+            "reduceOnly": "true" if reduce_only else "false",
+            "newOrderRespType": "RESULT"
+        }
+        
+        logger.info(f"[LIVE] 限价单下单: {side} {qty} {symbol} @ ${price:.2f}")
+        
+        result = self._request('POST', '/fapi/v1/order', params, signed=True)
+        
+        if result and result.get('orderId'):
+            logger.info(f"✅ 限价单成功: orderId={result.get('orderId')}, price=${price:.2f}")
+        else:
+            logger.error(f"❌ 限价单失败: {result}")
+        
+        return result
+    
     def cancel_all_orders(self, symbol: str) -> Optional[Dict]:
         """撤销所有挂单"""
         params = {"symbol": symbol}
         return self._request('DELETE', '/fapi/v1/allOpenOrders', params, signed=True)
+    
+    def cancel_order(self, symbol: str, order_id: str) -> Optional[Dict]:
+        """撤销指定订单"""
+        params = {"symbol": symbol, "orderId": order_id}
+        return self._request('DELETE', '/fapi/v1/order', params, signed=True)
 
     def set_leverage(self, symbol: str, leverage: int) -> Optional[Dict]:
         """设置杠杆倍数"""
