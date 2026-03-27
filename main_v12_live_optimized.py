@@ -3372,6 +3372,7 @@ class V12OptimizedTrader:
             ml_dir = "看多" if signal.ml_direction == 1 else "看空" if signal.ml_direction == -1 else "观望"
             
             # 获取技术指标判断（用于日志显示）
+            tech_signal = None  # 初始化为None
             try:
                 df_feat = MLFeatureEngineer().create_features(df)
                 if len(df_feat) > 0:
@@ -3383,13 +3384,16 @@ class V12OptimizedTrader:
             except Exception as e:
                 tech_info = f"获取失败:{str(e)[:20]}"
             
+            # 获取技术指标原因
+            tech_reason = tech_signal.get('reason', 'N/A')[:30] if tech_signal else 'N/A'
+            
             logger.info("="*70)
             logger.info(f"🚀 开仓执行 | {side} | {trade_type}")
             logger.info(f"   价格: ${price:.2f}")
             logger.info(f"   市场环境: {signal.regime.value} | 趋势: {signal.trend_direction}")
             logger.info(f"   ML判断: {ml_dir} (置信度:{signal.ml_confidence:.3f})")
             logger.info(f"   ML概率: 做空={signal.ml_proba_short:.3f}, 做多={signal.ml_proba_long:.3f}")
-            logger.info(f"   技术指标: {tech_info} | 原因: {tech_signal.get('reason', 'N/A')[:30]}")
+            logger.info(f"   技术指标: {tech_info} | 原因: {tech_reason}")
             logger.info(f"   ML阈值: {signal.ml_threshold:.3f} (顺势:0.70,逆势:0.85/0.90)")
             logger.info(f"   信号来源: {signal.source.value} | 原因: {signal.reason}")
             logger.info(f"   止损: ${signal.sl_price:.2f} | 止盈: ${signal.tp_price:.2f}")
