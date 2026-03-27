@@ -708,6 +708,7 @@ class SignalGenerator:
         self._evt_trailing_active = False
         self._evt_trailing_peak = 0
         self._last_evt_target = 0  # 重置EVT目标追踪
+        self._evt_high_target = 0  # 重置EVT高目标
     
     def check_spike_circuit_breaker(self, current_price: float) -> Tuple[bool, str]:
         """插针熔断检测 - 价格剧烈波动保护
@@ -2100,25 +2101,35 @@ class SignalGenerator:
                 fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%
                 
                 if CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
-                    # 方案B1: 超过1.6%后，EVT计算更高目标
+                    # 方案B1修正: 两阶段固定目标
+                    # 初始化高目标存储
+                    if not hasattr(self, '_evt_high_target'):
+                        self._evt_high_target = 0
+                    
                     if pnl_pct < fixed_tp_pct:
-                        # 阶段1: 未达1.6%，强制目标>=1.6%
-                        tp_return = max(tp_return, fixed_tp_pct)
-                        phase = "阶段1(接近1.6%)"
+                        # 阶段1: 未达1.6%，目标=1.6%
+                        tp_return = fixed_tp_pct
+                        self._evt_high_target = 0  # 重置高目标
+                        phase = "阶段1(目标1.6%)"
                     else:
-                        # 阶段2: 已超过1.6%，计算更高目标
-                        # 目标 = max(EVT原始目标, 1.6% * 1.5倍 = 2.4%)
-                        higher_target = max(tp_return, fixed_tp_pct * 1.5)
-                        # 再加基于当前盈利的额外空间（让利润奔跑）
-                        extra_room = (pnl_pct - fixed_tp_pct) * 0.5  # 额外盈利的50%
-                        tp_return = higher_target + extra_room
-                        phase = "阶段2(追逐更高收益)"
+                        # 阶段2: 已超过1.6%，计算并锁定高目标
+                        if self._evt_high_target == 0:
+                            # 首次进入阶段2，计算高目标并锁定
+                            # 高目标 = max(EVT原始, 1.6%*1.5=2.4%, 当前盈利+0.3%缓冲)
+                            self._evt_high_target = max(
+                                tp_return, 
+                                fixed_tp_pct * 1.5,
+                                pnl_pct + 0.003 * leverage  # 当前盈利+0.3%缓冲
+                            )
+                            logger.info(f"[EVT-阶段2锁定] 高目标={self._evt_high_target*100:.2f}%, 当前={pnl_pct*100:.2f}%")
+                        tp_return = self._evt_high_target
+                        phase = "阶段2(锁定高目标)"
                     
                     # 日志优化：只在目标变化时输出
                     if not hasattr(self, '_last_evt_target'):
                         self._last_evt_target = 0
                     if abs(self._last_evt_target - tp_return) > 0.001:
-                        logger.info(f"[EVT-{phase}] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%, 固定止盈={fixed_tp_pct*100:.2f}%")
+                        logger.info(f"[EVT-{phase}] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
                         self._last_evt_target = tp_return
                 
                 if pnl_pct >= tp_return:
