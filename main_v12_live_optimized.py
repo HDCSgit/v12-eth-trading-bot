@@ -707,6 +707,7 @@ class SignalGenerator:
         # 重置EVT追踪状态
         self._evt_trailing_active = False
         self._evt_trailing_peak = 0
+        self._last_evt_target = 0  # 重置EVT目标追踪
     
     def check_spike_circuit_breaker(self, current_price: float) -> Tuple[bool, str]:
         """插针熔断检测 - 价格剧烈波动保护
@@ -2096,11 +2097,29 @@ class SignalGenerator:
                 logger.debug(f"[EVT检查] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
             
             if evt_method == 'EVT_GPD':
-                # 如果启用固定止盈+EVT追踪，纯EVT止盈目标必须至少达到固定止盈点
-                fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage
+                fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%
+                
                 if CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
-                    # 强制EVT目标 >= 固定止盈点，确保先触发固定止盈+追踪
-                    tp_return = max(tp_return, fixed_tp_pct * 1.1)  # 1.1倍安全边际
+                    # 方案B1: 超过1.6%后，EVT计算更高目标
+                    if pnl_pct < fixed_tp_pct:
+                        # 阶段1: 未达1.6%，强制目标>=1.6%
+                        tp_return = max(tp_return, fixed_tp_pct)
+                        phase = "阶段1(接近1.6%)"
+                    else:
+                        # 阶段2: 已超过1.6%，计算更高目标
+                        # 目标 = max(EVT原始目标, 1.6% * 1.5倍 = 2.4%)
+                        higher_target = max(tp_return, fixed_tp_pct * 1.5)
+                        # 再加基于当前盈利的额外空间（让利润奔跑）
+                        extra_room = (pnl_pct - fixed_tp_pct) * 0.5  # 额外盈利的50%
+                        tp_return = higher_target + extra_room
+                        phase = "阶段2(追逐更高收益)"
+                    
+                    # 日志优化：只在目标变化时输出
+                    if not hasattr(self, '_last_evt_target'):
+                        self._last_evt_target = 0
+                    if abs(self._last_evt_target - tp_return) > 0.001:
+                        logger.info(f"[EVT-{phase}] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%, 固定止盈={fixed_tp_pct*100:.2f}%")
+                        self._last_evt_target = tp_return
                 
                 if pnl_pct >= tp_return:
                     record = TPSignalRecord(
@@ -2113,7 +2132,7 @@ class SignalGenerator:
                         pnl_pct=pnl_pct,
                         pnl_usdt=0,
                         signal_type=TPSignalType.EVT_EXTREME,
-                        signal_description=f'EVT极值止盈触发(目标{tp_return*100:.2f}%)',
+                        signal_description=f'EVT高目标止盈(目标{tp_return*100:.2f}%)',
                         market_regime=regime.value,
                         current_price=current_price,
                         evt_shape=evt_info.get('shape'),
@@ -2125,10 +2144,11 @@ class SignalGenerator:
                     )
                     tp_manager.record_signal(record)
                     
-                    logger.info(f"🎯 [EVT触发] 止盈平仓！目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
+                    phase_str = "高目标" if pnl_pct >= fixed_tp_pct * 1.2 else "基础"
+                    logger.info(f"🎯 [EVT{phase_str}止盈] 目标={tp_return*100:.2f}%, 当前={pnl_pct*100:.2f}%")
                     return TradingSignal(
                         'CLOSE', 1.0, SignalSource.TECHNICAL,
-                        f'EVT极值止盈({pnl_pct*100:.2f}%, ξ={evt_info.get("shape", 0):.2f})',
+                        f'EVT{phase_str}止盈({pnl_pct*100:.2f}%, 目标{tp_return*100:.2f}%)',
                         atr, regime=regime, funding_rate=funding_rate
                     )
                 else:
@@ -2137,61 +2157,6 @@ class SignalGenerator:
                 logger.info(f"[EVT未启用] 方法={evt_method} (需要EVT_GPD)")
         except Exception as e:
             logger.warning(f"[EVT异常] 计算跳过: {e}")
-        
-        # ========== 4.5 固定止盈+EVT追踪 (2026-03-27新增) ==========
-        if CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
-            fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%杠杆后
-            
-            # 初始化追踪状态
-            if not hasattr(self, '_evt_trailing_active'):
-                self._evt_trailing_active = False
-                self._evt_trailing_peak = 0
-            
-            # 超过固定止盈点后，启用EVT追踪
-            if pnl_pct >= fixed_tp_pct:
-                # 激活EVT追踪
-                if not self._evt_trailing_active:
-                    self._evt_trailing_active = True
-                    self._evt_trailing_peak = pnl_pct
-                    logger.info(f"[EVT追踪] 超过固定止盈{fixed_tp_pct*100:.2f}%，启动追踪，当前{pnl_pct*100:.2f}%")
-                
-                # 更新峰值
-                if pnl_pct > self._evt_trailing_peak:
-                    self._evt_trailing_peak = pnl_pct
-                    logger.debug(f"[EVT追踪] 新峰值: {self._evt_trailing_peak*100:.2f}%")
-            
-            # 单独检查回撤触发（必须在追踪激活后且盈利回落到固定止盈点）
-            if self._evt_trailing_active and pnl_pct <= fixed_tp_pct:
-                # 保存峰值用于日志（重置前）
-                peak_pnl = self._evt_trailing_peak
-                
-                record = TPSignalRecord(
-                    timestamp=datetime.now(),
-                    position_id=f"{self.symbol}_{datetime.now().timestamp()}",
-                    symbol=self.symbol,
-                    side=position_side,
-                    entry_price=entry_price,
-                    exit_price=current_price,
-                    pnl_pct=pnl_pct,
-                    pnl_usdt=0,
-                    signal_type=TPSignalType.EVT_EXTREME,
-                    signal_description=f'EVT追踪止盈(峰值{peak_pnl*100:.2f}%, 回撤到固定止盈点{fixed_tp_pct*100:.2f}%)',
-                    market_regime=regime.value,
-                    current_price=current_price
-                )
-                tp_manager.record_signal(record)
-                
-                # 先记录日志，再重置
-                logger.info(f"🎯 [EVT追踪止盈] 峰值{peak_pnl*100:.2f}%, 回撤到{fixed_tp_pct*100:.2f}%, 当前{pnl_pct*100:.2f}%")
-                
-                # 重置追踪状态
-                self._evt_trailing_active = False
-                self._evt_trailing_peak = 0
-                return TradingSignal(
-                    'CLOSE', 1.0, SignalSource.TECHNICAL,
-                    f'EVT追踪止盈(回撤到固定止盈点{fixed_tp_pct*100:.2f}%)',
-                    atr, regime=regime, funding_rate=funding_rate
-                )
         
         # ========== 5. 分级ATR止盈（后备）==========
         if regime == MarketRegime.SIDEWAYS:
