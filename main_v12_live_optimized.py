@@ -2142,62 +2142,56 @@ class SignalGenerator:
         if CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
             fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%杠杆后
             
+            # 初始化追踪状态
+            if not hasattr(self, '_evt_trailing_active'):
+                self._evt_trailing_active = False
+                self._evt_trailing_peak = 0
+            
             # 超过固定止盈点后，启用EVT追踪
             if pnl_pct >= fixed_tp_pct:
-                # 检查是否已创建追踪记录
-                if not hasattr(self, '_evt_trailing_active'):
-                    self._evt_trailing_active = False
-                    self._evt_trailing_peak = 0
-                
                 # 激活EVT追踪
                 if not self._evt_trailing_active:
                     self._evt_trailing_active = True
                     self._evt_trailing_peak = pnl_pct
-                    logger.info(f"[EVT追踪] 超过固定止盈{fixed_tp_pct*100:.2f}%，启动EVT追踪，当前{pnl_pct*100:.2f}%")
+                    logger.info(f"[EVT追踪] 超过固定止盈{fixed_tp_pct*100:.2f}%，启动追踪，当前{pnl_pct*100:.2f}%")
                 
                 # 更新峰值
                 if pnl_pct > self._evt_trailing_peak:
                     self._evt_trailing_peak = pnl_pct
                     logger.debug(f"[EVT追踪] 新峰值: {self._evt_trailing_peak*100:.2f}%")
+            
+            # 单独检查回撤触发（必须在追踪激活后且盈利回落到固定止盈点）
+            if self._evt_trailing_active and pnl_pct <= fixed_tp_pct:
+                # 保存峰值用于日志（重置前）
+                peak_pnl = self._evt_trailing_peak
                 
-                # 检查是否回退到固定止盈点（用户策略：回撤到1.6%触发）
-                if pnl_pct <= fixed_tp_pct:
-                    drawdown_from_peak = self._evt_trailing_peak - pnl_pct
-                    # 保存峰值用于日志（重置前）
-                    peak_pnl = self._evt_trailing_peak
-                    
-                    record = TPSignalRecord(
-                        timestamp=datetime.now(),
-                        position_id=f"{self.symbol}_{datetime.now().timestamp()}",
-                        symbol=self.symbol,
-                        side=position_side,
-                        entry_price=entry_price,
-                        exit_price=current_price,
-                        pnl_pct=pnl_pct,
-                        pnl_usdt=0,
-                        signal_type=TPSignalType.EVT_EXTREME,
-                        signal_description=f'EVT追踪止盈(峰值{peak_pnl*100:.2f}%, 回撤到固定止盈点{fixed_tp_pct*100:.2f}%)',
-                        market_regime=regime.value,
-                        current_price=current_price
-                    )
-                    tp_manager.record_signal(record)
-                    
-                    # 先记录日志，再重置
-                    logger.info(f"🎯 [EVT追踪止盈] 峰值{peak_pnl*100:.2f}%, 回撤到固定止盈点{fixed_tp_pct*100:.2f}%, 当前{pnl_pct*100:.2f}%")
-                    
-                    # 重置追踪状态
-                    self._evt_trailing_active = False
-                    self._evt_trailing_peak = 0
-                    return TradingSignal(
-                        'CLOSE', 1.0, SignalSource.TECHNICAL,
-                        f'EVT追踪止盈(回撤到固定止盈点{fixed_tp_pct*100:.2f}%)',
-                        atr, regime=regime, funding_rate=funding_rate
-                    )
-            else:
-                # 未超过固定止盈点，重置追踪状态
-                if hasattr(self, '_evt_trailing_active') and self._evt_trailing_active:
-                    self._evt_trailing_active = False
-                    self._evt_trailing_peak = 0
+                record = TPSignalRecord(
+                    timestamp=datetime.now(),
+                    position_id=f"{self.symbol}_{datetime.now().timestamp()}",
+                    symbol=self.symbol,
+                    side=position_side,
+                    entry_price=entry_price,
+                    exit_price=current_price,
+                    pnl_pct=pnl_pct,
+                    pnl_usdt=0,
+                    signal_type=TPSignalType.EVT_EXTREME,
+                    signal_description=f'EVT追踪止盈(峰值{peak_pnl*100:.2f}%, 回撤到固定止盈点{fixed_tp_pct*100:.2f}%)',
+                    market_regime=regime.value,
+                    current_price=current_price
+                )
+                tp_manager.record_signal(record)
+                
+                # 先记录日志，再重置
+                logger.info(f"🎯 [EVT追踪止盈] 峰值{peak_pnl*100:.2f}%, 回撤到{fixed_tp_pct*100:.2f}%, 当前{pnl_pct*100:.2f}%")
+                
+                # 重置追踪状态
+                self._evt_trailing_active = False
+                self._evt_trailing_peak = 0
+                return TradingSignal(
+                    'CLOSE', 1.0, SignalSource.TECHNICAL,
+                    f'EVT追踪止盈(回撤到固定止盈点{fixed_tp_pct*100:.2f}%)',
+                    atr, regime=regime, funding_rate=funding_rate
+                )
         
         # ========== 5. 分级ATR止盈（后备）==========
         if regime == MarketRegime.SIDEWAYS:
