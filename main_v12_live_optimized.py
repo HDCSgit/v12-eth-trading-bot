@@ -2007,24 +2007,64 @@ class SignalGenerator:
                 atr, regime=regime, funding_rate=funding_rate
             )
         
-        # [保留代码但不使用] ========== 2. 盈利保护（浮盈回撤50%强制平仓）==========
-        """
-        profit_prot_pct = CONFIG.get("PROFIT_PROTECTION_ENABLE_PCT", 0.005) * leverage
+        # ========== 2. 盈利保护（峰值回撤50%强制平仓）==========
+        profit_prot_pct = CONFIG.get("PROFIT_PROTECTION_ENABLE_PCT", 0.005) * leverage  # 乘以杠杆匹配pnl_pct
         profit_drawback = CONFIG.get("PROFIT_PROTECTION_DRAWBACK_PCT", 0.50)
-        if self.position_peak_pnl > profit_prot_pct and pnl_pct < self.position_peak_pnl * (1 - profit_drawback):
-            record = TPSignalRecord(...)
-            tp_manager.record_signal(record)
-            return TradingSignal('CLOSE', ...)
-        """
         
-        # [保留代码但不使用] ========== 3. 移动止盈（让利润奔跑，回撤30%）==========
-        """
-        trailing_enable = CONFIG.get("TRAILING_STOP_ENABLE_PCT", 0.008) * leverage
-        if self.position_peak_pnl > trailing_enable and pnl_pct <= self.position_trailing_stop:
-            record = TPSignalRecord(...)
+        if self.position_peak_pnl > profit_prot_pct and pnl_pct < self.position_peak_pnl * (1 - profit_drawback):
+            record = TPSignalRecord(
+                timestamp=datetime.now(),
+                position_id=f"{self.symbol}_{datetime.now().timestamp()}",
+                symbol=self.symbol,
+                side=position_side,
+                entry_price=entry_price,
+                exit_price=current_price,
+                pnl_pct=pnl_pct,
+                pnl_usdt=0,
+                signal_type=TPSignalType.PROFIT_PROTECTION,
+                signal_description=f'盈利保护：峰值{self.position_peak_pnl*100:.2f}%回撤50%至{pnl_pct*100:.2f}%',
+                market_regime=regime.value,
+                current_price=current_price,
+                pp_peak_pnl=self.position_peak_pnl,
+                pp_current_pnl=pnl_pct,
+                pp_drawback_pct=profit_drawback
+            )
             tp_manager.record_signal(record)
-            return TradingSignal('CLOSE', ...)
-        """
+            
+            return TradingSignal(
+                'CLOSE', 1.0, SignalSource.TECHNICAL,
+                f'盈利保护(峰值{self.position_peak_pnl*100:.2f}%, 回撤过半至{pnl_pct*100:.2f}%)',
+                atr, regime=regime, funding_rate=funding_rate
+            )
+        
+        # ========== 3. 移动止盈（峰值回撤30%）==========
+        trailing_enable = CONFIG.get("TRAILING_STOP_ENABLE_PCT", 0.008) * leverage  # 乘以杠杆匹配pnl_pct
+        
+        if self.position_peak_pnl > trailing_enable and pnl_pct <= self.position_trailing_stop:
+            record = TPSignalRecord(
+                timestamp=datetime.now(),
+                position_id=f"{self.symbol}_{datetime.now().timestamp()}",
+                symbol=self.symbol,
+                side=position_side,
+                entry_price=entry_price,
+                exit_price=current_price,
+                pnl_pct=pnl_pct,
+                pnl_usdt=0,
+                signal_type=TPSignalType.TRAILING_STOP,
+                signal_description=f'移动止盈：峰值{self.position_peak_pnl*100:.2f}%回撤30%至{pnl_pct*100:.2f}%',
+                market_regime=regime.value,
+                current_price=current_price,
+                ts_peak_pnl=self.position_peak_pnl,
+                ts_trailing_stop_level=self.position_trailing_stop,
+                ts_drawback_pct=0.30
+            )
+            tp_manager.record_signal(record)
+            
+            return TradingSignal(
+                'CLOSE', 1.0, SignalSource.TECHNICAL,
+                f'移动止盈(峰值{self.position_peak_pnl*100:.2f}%, 回撤至{pnl_pct*100:.2f}%)',
+                atr, regime=regime, funding_rate=funding_rate
+            )
         
         # ========== 4. 纯固定止盈（最简单可靠）==========
         fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%杠杆后
