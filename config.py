@@ -269,6 +269,7 @@ CONFIG = {
     "ML_CONFIDENCE_THRESHOLD": 0.70,       # ML顺势入场阈值(原为0.56)
     "COUNTER_TREND_ML_THRESHOLD_SIDEWAYS": 0.85,  # 震荡市逆势阈值
     "COUNTER_TREND_ML_THRESHOLD_TREND": 0.90,     # 趋势市逆势阈值
+    "ML_REVERSE_PNL_PCT": 0.045,           # ML反转出场阈值(4.5%，已含杠杆)
     
     # 动态仓位（仅按置信度调整，不按环境简化）
     "USE_DYNAMIC_POSITION_SIZE": True,     # 启用动态仓位

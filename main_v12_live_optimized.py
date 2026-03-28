@@ -2066,7 +2066,8 @@ class SignalGenerator:
             )
         
         # ========== 4. 盈利保护（峰值回撤50%，最后防线）==========
-        profit_prot_pct = CONFIG.get("PROFIT_PROTECTION_ENABLE_PCT", 0.005) * leverage
+        # 注意：PROFIT_PROTECTION_ENABLE_PCT 应该是杠杆后的阈值（如 0.5% 已含杠杆）
+        profit_prot_pct = CONFIG.get("PROFIT_PROTECTION_ENABLE_PCT", 0.005)  # 直接使用配置值
         profit_drawback = CONFIG.get("PROFIT_PROTECTION_DRAWBACK_PCT", 0.50)
         
         if self.position_peak_pnl > profit_prot_pct and pnl_pct < self.position_peak_pnl * (1 - profit_drawback):
@@ -2120,7 +2121,8 @@ class SignalGenerator:
         if self.ml_model.is_trained:
             ml_pred = self.ml_model.predict(df)
             
-            ml_reverse_pnl = CONFIG.get("PROFIT_PROTECTION_ENABLE_PCT", 0.015) * 3 * leverage  # 乘以杠杆匹配pnl_pct
+            # ML反转阈值：盈利需超过 4.5%（已含杠杆）
+            ml_reverse_pnl = CONFIG.get("ML_REVERSE_PNL_PCT", 0.045)  # 直接使用杠杆后的百分比
             ml_reverse_conf = CONFIG.get("ML_CONFIDENCE_THRESHOLD", 0.55) + 0.19
             
             if pnl_pct > ml_reverse_pnl and ml_pred['confidence'] > ml_reverse_conf:
