@@ -2004,7 +2004,8 @@ class SignalGenerator:
             )
         
         # ========== 2. 纯固定止盈（优先级最高，超过即平）==========
-        fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016) * leverage  # 1.6%杠杆后
+        # 注意：FIXED_TP_PCT 应该是杠杆后的目标（如 1.6% 已含杠杆）
+        fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016)  # 直接使用配置值，不再乘以杠杆
         
         if pnl_pct >= fixed_tp_pct:
             record = TPSignalRecord(
