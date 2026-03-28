@@ -204,7 +204,7 @@ CONFIG = {
     # ML环境检测模块 (新增 2026-03-27)
     # ==========================================
     # 总开关：一键关停所有ML环境相关功能
-    "ML_REGIME_ENABLED": True,  # False = 完全停用，回退到纯技术指标
+    "ML_REGIME_ENABLED": False,  # False = 完全停用，回退到V1规则技术指标判断
     
     # ⭐ V2 新增: XGBoost市场环境检测版本选择
     "ML_REGIME_VERSION": "v2",  # "v1" = 规则版本, "v2" = XGBoost模型版本
