@@ -650,22 +650,8 @@ class SignalGenerator:
         return True, f"位置合格({position_pct:.1f}%)"
     
     def _calculate_fixed_sl_tp(self, entry: float, action: str, atr: float = None) -> Tuple[float, float]:
-        """使用固定盈亏比计算SL/TP"""
-        if not CONFIG.get("USE_FIXED_RR_WITH_EVT", False):
-            # 使用传统ATR模式
-            if atr is None:
-                atr = entry * 0.01  # 默认1%
-            sl_mult = CONFIG.get("STOP_LOSS_ATR_MULT", 2.0)
-            tp_mult = CONFIG.get("TP_SIDEWAYS_ATR_MULT", 4.0)
-            if action == 'BUY':
-                sl = entry - atr * sl_mult
-                tp = entry + atr * tp_mult
-            else:
-                sl = entry + atr * sl_mult
-                tp = entry - atr * tp_mult
-            return sl, tp
-        
-        # 固定百分比模式
+        """使用固定百分比计算SL/TP"""
+        # 固定百分比模式（不再使用ATR）
         stop_pct = CONFIG.get("FIXED_STOP_PCT", 0.008)
         tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016)
         
@@ -1962,11 +1948,10 @@ class SignalGenerator:
         # 获取止盈管理器
         tp_manager = get_tp_manager()
         
-        # ========== 1. 动态止损（严格）- 最高优先级 ==========
-        sl_mult = CONFIG.get("STOP_LOSS_ATR_MULT", 2.0)
-        sl_pct = -sl_mult * atr / entry_price * leverage  # 乘以杠杆，与pnl_pct一致
+        # ========== 1. 固定止损（严格）- 最高优先级 ==========
+        fixed_sl_pct = -CONFIG.get("FIXED_STOP_PCT", 0.008)  # 固定止损 -0.8%
         
-        if pnl_pct <= sl_pct:
+        if pnl_pct <= fixed_sl_pct:
             record = TPSignalRecord(
                 timestamp=datetime.now(),
                 position_id=f"{self.symbol}_{datetime.now().timestamp()}",
@@ -1975,20 +1960,20 @@ class SignalGenerator:
                 entry_price=entry_price,
                 exit_price=current_price,
                 pnl_pct=pnl_pct,
-                pnl_usdt=0,  # 会在平仓时更新
+                pnl_usdt=0,
                 signal_type=TPSignalType.STOP_LOSS_DYNAMIC,
-                signal_description=f'动态止损触发，亏损{pnl_pct*100:.2f}%',
+                signal_description=f'固定止损触发，亏损{pnl_pct*100:.2f}%',
                 market_regime=regime.value,
                 current_price=current_price,
                 sl_atr_value=atr,
-                sl_atr_multiplier=sl_mult,
-                sl_distance_pct=sl_pct
+                sl_atr_multiplier=0,
+                sl_distance_pct=fixed_sl_pct
             )
             tp_manager.record_signal(record)
             
             return TradingSignal(
                 'CLOSE', 1.0, SignalSource.TECHNICAL,
-                f'动态止损({pnl_pct*100:.2f}%)',
+                f'固定止损({pnl_pct*100:.2f}%)',
                 atr, regime=regime, funding_rate=funding_rate
             )
         
@@ -2137,37 +2122,20 @@ class SignalGenerator:
     def _calculate_sl_tp(
         self, action: str, price: float, atr: float, regime: MarketRegime
     ) -> Tuple[float, float]:
-        """计算动态止盈止损价格（修复版）
+        """计算固定止盈止损价格
         
-        修复：直接使用配置参数，避免额外的乘法导致参数不一致
+        使用固定百分比而非ATR倍数
         """
-        # 从配置直接读取，不使用默认值避免与config.py不一致
-        base_sl_mult = CONFIG.get("STOP_LOSS_ATR_MULT")
-        if base_sl_mult is None:
-            base_sl_mult = 1.5  # 与config.py默认值一致
-        
-        # 根据市场环境调整倍数
-        if regime == MarketRegime.SIDEWAYS:
-            # 震荡市：使用专用参数或基础值的固定比例
-            sl_mult = CONFIG.get("SIDEWAYS_STOP_LOSS_ATR_MULT", base_sl_mult * 0.9)
-            tp_mult = CONFIG.get("TP_SIDEWAYS_ATR_MULT", 4.0)
-        else:  # 趋势市
-            sl_mult = base_sl_mult
-            tp_mult = CONFIG.get("TP_TRENDING_ATR_MULT", 8.0)
-        
-        # 确保最小止损距离（避免过紧）
-        min_sl_pct = CONFIG.get("STOP_LOSS_MIN_PCT", 0.008)
-        actual_sl_pct = sl_mult * atr / price
-        if actual_sl_pct < min_sl_pct:
-            sl_mult = min_sl_pct * price / atr
-            logger.debug(f"止损距离过紧，调整倍数: {sl_mult:.2f}")
+        # 固定止损和止盈百分比（已含杠杆）
+        fixed_sl_pct = CONFIG.get("FIXED_STOP_PCT", 0.008)  # 0.8%
+        fixed_tp_pct = CONFIG.get("FIXED_TP_PCT", 0.016)    # 1.6%
         
         if action == 'BUY':
-            sl_price = price - atr * sl_mult
-            tp_price = price + atr * tp_mult
+            sl_price = price * (1 - fixed_sl_pct)
+            tp_price = price * (1 + fixed_tp_pct)
         else:
-            sl_price = price + atr * sl_mult
-            tp_price = price - atr * tp_mult
+            sl_price = price * (1 + fixed_sl_pct)
+            tp_price = price * (1 - fixed_tp_pct)
         
         return sl_price, tp_price
     
@@ -2308,17 +2276,16 @@ class RiskManager:
         # 综合乘数
         total_mult = confidence_mult * regime_mult
         
-        # ========== 3. ATR止损距离（根据置信度调整）==========
-        base_sl_mult = CONFIG.get("STOP_LOSS_ATR_MULT", 2.0)
-        if confidence >= 0.98:
-            atr_mult = base_sl_mult * 1.25  # 高置信度：宽止损
-        elif confidence >= 0.60:
-            atr_mult = base_sl_mult  # 中置信度：标准
-        else:
-            atr_mult = base_sl_mult * 0.75  # 低置信度：紧止损
+        # ========== 3. 固定止损百分比（不再使用ATR）==========
+        fixed_sl_pct = CONFIG.get("FIXED_STOP_PCT", 0.008)  # 0.8%
         
-        min_sl_pct = CONFIG.get("STOP_LOSS_MIN_PCT", 0.008)
-        stop_loss_pct = max(atr_mult * atr / price, min_sl_pct)
+        # 根据置信度微调止损百分比（高置信度允许稍宽止损）
+        if confidence >= 0.98:
+            stop_loss_pct = fixed_sl_pct * 1.25  # 1.0%
+        elif confidence >= 0.60:
+            stop_loss_pct = fixed_sl_pct  # 0.8%
+        else:
+            stop_loss_pct = fixed_sl_pct * 0.75  # 0.6%
         
         # ========== 4. 计算基础数量 ==========
         base_qty = (base_risk * total_mult) / (stop_loss_pct * price)
