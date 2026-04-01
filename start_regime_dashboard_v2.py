@@ -66,19 +66,22 @@ class RegimeDashboardV2:
     def _load_data(self):
         """加载和预测数据"""
         print("Loading data...")
-        self.df = pd.read_csv(self.data_file)
-        self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+        df = pd.read_csv(self.data_file)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
         
         # 只取最近500条用于显示
-        if len(self.df) > 500:
-            display_df = self.df.tail(500).copy()
+        if len(df) > 500:
+            self.df = df.tail(500).copy()
         else:
-            display_df = self.df.copy()
+            self.df = df.copy()
+        
+        # 确保timestamp是字符串格式（Plotly兼容性）
+        self.df['timestamp'] = self.df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
         print("Running prediction...")
-        self.result_df = self.detector.predict_batch(display_df)
+        self.result_df = self.detector.predict_batch(self.df)
         
-        print(f"Data loaded: {len(display_df)} samples")
+        print(f"Data loaded: {len(self.df)} samples")
         print(f"Latest regime: {self.result_df['regime_pred'].iloc[-1]}")
     
     def _setup_layout(self):
@@ -219,7 +222,8 @@ class RegimeDashboardV2:
             last_time = self.df['timestamp'].iloc[-1]
             future_end = future_df['timestamp'].iloc[-1]
             fig.add_vrect(
-                x0=last_time, x1=future_end,
+                x0=last_time, 
+                x1=future_end,
                 fillcolor="blue", opacity=0.05,
                 layer="below", line_width=0,
             )
@@ -258,7 +262,10 @@ class RegimeDashboardV2:
     def _generate_future_candles(self):
         """生成未来预测K线"""
         last_price = self.df['close'].iloc[-1]
-        last_time = self.df['timestamp'].iloc[-1]
+        last_time_str = self.df['timestamp'].iloc[-1]
+        # 将字符串时间转回datetime用于计算
+        last_time = pd.to_datetime(last_time_str)
+        
         latest_regime = self.result_df['regime_pred'].iloc[-1]
         confidence = self.result_df['regime_confidence'].iloc[-1]
         
@@ -294,7 +301,7 @@ class RegimeDashboardV2:
             future_time = last_time + timedelta(minutes=15 * (i + 1))
             
             future_data.append({
-                'timestamp': future_time,
+                'timestamp': future_time.strftime('%Y-%m-%d %H:%M:%S'),
                 'open': open_p,
                 'high': high_p,
                 'low': low_p,

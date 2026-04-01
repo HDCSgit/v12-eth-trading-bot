@@ -82,14 +82,26 @@ TP% = clamp(TP%, 0.3%, 3%)  # 硬限制
 ### 4. 统一出场管理器 (8种策略)
 | 优先级 | 出场策略 | 触发条件 |
 |-------|---------|---------|
-| 1 | Dynamic Stop Loss | ATR×1.5倍止损 |
-| 2 | Profit Protection | 回撤50%保护利润 |
-| 3 | Trailing Stop | 峰值回撤30%跟踪止盈 |
-| 4 | **EVT Extreme** | GPD 95%分位数极端止盈 |
-| 5 | ATR Fixed | 盘整4xATR/趋势8xATR |
+| 1 | Fixed Stop Loss | 固定0.8%止损 (v12.7) |
+| 2 | Fixed Take Profit | 固定1.6%止盈 (v12.7) |
+| 3 | Profit Protection | 回撤50%保护利润 |
+| 4 | Trailing Stop | 峰值回撤30%跟踪止盈 |
+| 5 | **EVT Extreme** | GPD 95%分位数极端止盈 |
 | 6 | ML Reversal | ML置信度>0.75反转信号 |
 | 7 | Funding Extreme | 资金费率>1%极端值 |
 | 8 | Time Exit | 超时强制出场 |
+
+### 5. 多空平衡检查 (v12.7)
+防止系统过度偏向单一方向（如连续做空）：
+- 跟踪最近5笔交易记录
+- 同方向连续亏损2笔后，暂停该方向开仓
+- 强制切换方向或观望，直到平衡恢复
+
+```python
+# 配置参数
+"consecutive_loss_limit": 2  # 连续亏损次数限制
+"max_recent_trades": 10      # 跟踪交易数
+```
 
 ---
 
@@ -105,15 +117,21 @@ binancepro/
 ├── config.py                    # 全局配置参数
 ├── risk_execution_v2_5.py       # 风控执行模块
 │
-├── market_regime_v2/            # 🆕 ML市场环境检测V2模块
+├── market_regime_v2/            # ML市场环境检测V2模块
 │   ├── detector.py              # XGBoost检测器主类
 │   ├── trainer.py               # 模型训练器
 │   ├── features.py              # 39维特征工程
 │   ├── visualizer.py            # 可视化工具
 │   └── integration.py           # 主程序集成接口
 │
-├── train_regime_v2.py           # 🆕 V2模型训练脚本
-├── test_regime_v2.py            # 🆕 V2模型测试脚本
+├── auto_ml_trainer.py           # 自动ML训练器
+├── quick_train.py               # 快速训练启动器(v12.7)
+├── offline_training.py          # 离线训练工具
+├── train_regime_v2.py           # V2模型训练脚本
+├── test_regime_v2.py            # V2模型测试脚本
+├── check_freshness.py           # 数据新鲜度检查
+├── sync_data.py                 # CSV与SQLite同步
+│
 ├── models/                      # 模型文件目录
 │   └── regime_xgb_v1.pkl        # V2训练好的模型
 │
@@ -123,7 +141,7 @@ binancepro/
 │
 ├── requirements.txt             # Python依赖
 ├── start_v12_optimized.bat      # 启动脚本
-├── start_auto_training.bat      # 🆕 自动训练服务（含V2）
+├── start_auto_training.bat      # 自动训练服务（中英双语）
 └── README.md                    # 本文件
 ```
 
@@ -135,31 +153,33 @@ binancepro/
 ```python
 # 杠杆与资金
 LEVERAGE = 5                    # 固定5倍杠杆
-MAX_RISK_PCT = 0.03            # 单笔风险3%
-MAX_DAILY_TRADES = 20          # 日最大交易次数
+MAX_RISK_PCT = 0.025           # 单笔风险2.5%
+MAX_DAILY_TRADES = 500         # 日最大交易次数
 
 # ML阈值
 COUNTER_TREND_ML_THRESHOLD = 0.85   # 逆势交易需0.85置信度
-SIDEWAYS_MIN_CONFIDENCE = 0.70      # 盘整最低0.70置信度
-NIGHT_TRADING_CONFIDENCE = 0.75     # 凌晨时段(02-05)需0.75
+SIDEWAYS_MIN_CONFIDENCE = 0.80      # 盘整最低0.80置信度
+ML_CONFIDENCE_THRESHOLD = 0.55      # ML顺势信号门槛
 
-# 🆕 ML市场环境检测V2配置
-ML_REGIME_VERSION = "v2"                  # "v1"=规则, "v2"=XGBoost
-ML_REGIME_V2_MODEL_PATH = "models/regime_xgb_v1.pkl"
-ML_REGIME_V2_CONFIDENCE_THRESHOLD = 0.65  # V2置信度阈值
-ML_REGIME_V2_ENABLE_UNCERTAINTY = True    # 启用不确定性量化
-ML_REGIME_ENABLED = True                  # 总开关
-ML_REGIME_OVERRIDE_ENABLED = True         # 允许覆盖技术判断
+# 训练数据模式 (v12.7新增)
+TRAINING_DATA_MODE = "sliding_window"     # "sliding_window"=滑动窗口 | "fixed_start"=固定起点
+TRAINING_FIXED_START_DATE = "2025-07-05"  # 固定起点模式的起始日期
+TRAINING_SLIDING_MONTHS = 9               # 滑动窗口月数
+
+# ML市场环境检测V2配置 (当前禁用)
+ML_REGIME_ENABLED = False               # 总开关 (当前使用V1规则)
+ML_REGIME_VERSION = "v1"                # "v1"=规则, "v2"=XGBoost
 
 # 风控参数
-STOP_LOSS_ATR_MULT = 1.5       # 止损1.5倍ATR
-MAX_DRAWDOWN_PCT = 0.10        # 最大回撤10%暂停
-COOLDOWN_MINUTES = 15          # 连败冷却15分钟
+USE_FIXED_RR_WITH_EVT = True   # 启用固定盈亏比
+FIXED_STOP_PCT = 0.008         # 固定止损0.8%
+FIXED_TP_PCT = 0.016           # 固定止盈1.6%
+PURE_FIXED_TP = True           # 纯固定止盈，不追踪
+MAX_DRAWDOWN_PCT = 0.15        # 最大回撤15%暂停
 
-# EVT参数
-EVT_LOOKBACK = 300             # 5小时回看窗口
-EVT_THRESHOLD_PCT = 80         # POT阈值80%分位
-EVT_QUANTILE = 0.95            # 目标95%分位数
+# 多空平衡参数
+consecutive_loss_limit = 2     # 连续亏损次数限制
+max_recent_trades = 10         # 跟踪交易数
 ```
 
 ### API配置 (`.env`)
@@ -198,22 +218,36 @@ copy .env.example .env
 1. **交易信号模型** (V1) - 预测涨跌方向
 2. **市场环境模型** (V2) - 识别市场环境类型
 
+#### 训练数据模式（v12.7新增）
+
+| 模式 | 说明 | 配置项 |
+|------|------|--------|
+| **滑动窗口** (默认) | 最近9个月数据，随时间滑动 | `TRAINING_DATA_MODE: "sliding_window"` |
+| **固定起点** | 2025-07-05后所有数据，累积增长 | `TRAINING_DATA_MODE: "fixed_start"` |
+
 ```bash
 # 方式1: 使用自动训练服务（推荐）
 start_auto_training.bat
 # 菜单选项:
-#   [1] 启动完整服务（下载数据+定时训练）
-#   [3] 训练交易信号模型
-#   [4] 训练市场环境判断模型 (V2 XGBoost)
-#   [5] 训练所有模型（交易信号+V2环境）
+#   [3] Quick Train - Sliding Window (滑动窗口)
+#   [4] Quick Train - Fixed Start (固定起点)
+#   [5] Full Train - Sliding Window (完整重训练)
+#   [6] Full Train - Fixed Start (完整重训练)
 
-# 方式2: 单独训练V2市场环境模型
+# 方式2: 使用快速训练脚本
+python quick_train.py                    # 默认滑动窗口
+python quick_train.py --fixed            # 固定起点模式
+python quick_train.py --full             # 完整训练(非增量)
+python quick_train.py --fixed --full     # 固定起点+完整训练
+python quick_train.py --months 6         # 自定义滑动月数
+
+# 方式3: 单独训练V2市场环境模型
 python train_regime_v2.py \
     --data eth_usdt_15m_binance.csv \
     --output models/regime_xgb_v1.pkl \
     --lookforward 48
 
-# 方式3: 测试V2模型
+# 方式4: 测试V2模型
 python test_regime_v2.py \
     --model models/regime_xgb_v1.pkl \
     --data eth_usdt_15m_binance.csv
@@ -253,18 +287,20 @@ python main_v12_live_optimized.py
 
 ## 📊 性能表现
 
-### 最新优化（2025-03-24）
+### 最新优化（2026-04-01）
 | 指标 | 优化前 | 优化后目标 |
 |-----|-------|-----------|
-| **胜率** | 26.9% | **35-40%** |
-| 日均交易 | 26笔/8h | 维持频率 |
-| 最大回撤 | <10% | <10% |
+| **胜率** | 41% | **45-50%** |
+| 日均交易 | 18笔/8h | 10-15笔（提高质量） |
+| 最大回撤 | <15% | <10% |
+| 止损控制 | -5.88% | -0.8%（固定） |
 
-### 关键修复（4项紧急修复）
-1. **Spike检测收紧**: 1.0% → 1.5%阈值，减少假突破
-2. **凌晨时段过滤**: 02:00-05:00需置信度≥0.75
-3. **禁用盘整策略**: CONSOLIDATION状态0%胜率，暂时禁用
-4. **逆势阈值提升**: 0.82 → 0.85，减少趋势中逆势交易
+### 关键修复（v12.7核心修复）
+1. **固定止损止盈**: 放弃ATR动态，使用固定0.8%止损/1.6%止盈
+2. **多空平衡检查**: 防止连续同方向亏损，强制方向切换
+3. **训练数据模式**: 支持滑动窗口(最新鲜)和固定起点(样本多)两种模式
+4. **ML Regime禁用**: V2准确率41%低于阈值，回退到V1规则
+5. **数据同步工具**: CSV与SQLite自动同步，确保数据一致性
 
 ---
 
@@ -324,6 +360,13 @@ python main_v12_live_optimized.py
 ---
 
 ## 🔄 更新日志
+
+### v12.7 (2026-04-01) 🔄 训练数据模式优化
+- [x] **双模式训练数据**: 滑动窗口(最近9个月) vs 固定起点(2025-07-05后所有)
+- [x] **配置化切换**: `TRAINING_DATA_MODE` 配置项控制
+- [x] **快速训练脚本**: `quick_train.py` 支持命令行参数切换
+- [x] **多空平衡检查**: 防止连续同方向亏损，强制方向切换
+- [x] **修复position_pct未定义错误**
 
 ### v12.6.6 (2026-03-27) ✅ 纯固定止盈1.6%
 - [x] **最简策略**: 放弃所有复杂止盈逻辑，纯固定1.6%

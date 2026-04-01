@@ -1,0 +1,5 @@
+Status: 危险
+WinRate(20): 25.0%
+MaxDrawdown: 32.65%
+ProfitFactor: 0.82
+Issues: 5

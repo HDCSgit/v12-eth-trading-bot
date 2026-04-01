@@ -187,6 +187,11 @@ CONFIG = {
     # 11. ML模型训练参数
     # ==========================================
     
+    # 训练数据范围模式
+    "TRAINING_DATA_MODE": "sliding_window",  # "sliding_window"=滑动窗口(最近9个月) | "fixed_start"=固定起点(2025-07-05之后所有数据)
+    "TRAINING_FIXED_START_DATE": "2025-07-05",  # 固定起点模式的起始日期
+    "TRAINING_SLIDING_MONTHS": 9,      # 滑动窗口模式的月数
+    
     "ML_N_ESTIMATORS": 150,            # XGBoost树数量
     "ML_MAX_DEPTH": 4,                 # 树最大深度
     "ML_LEARNING_RATE": 0.08,          # 学习率

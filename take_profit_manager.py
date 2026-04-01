@@ -51,26 +51,33 @@ class TPSignalRecord:
     """
     止盈信号完整记录 - 用于后期分析评估
     """
+    # ========== 必填字段（无默认值，必须放前面）==========
     # 基础信息
     timestamp: datetime
     position_id: str
     symbol: str
     side: str
     
+    # 核心：信号来源
+    signal_type: TPSignalType
+    signal_description: str
+    
     # 价格信息
     entry_price: float
     exit_price: float
     pnl_pct: float
     pnl_usdt: float
-    leverage: int = 5
-    
-    # 核心：信号来源
-    signal_type: TPSignalType
-    signal_description: str
     
     # 触发时的市场状态
     market_regime: str
     current_price: float
+    
+    # ========== 可选字段（有默认值，放后面）==========
+    # 杠杆（默认5倍）
+    leverage: int = 5
+    
+    # 持仓周期数
+    holding_periods: int = 0
     
     # 各策略参数（根据signal_type填充对应字段）
     # ========== 止损类参数 ==========
@@ -111,7 +118,6 @@ class TPSignalRecord:
     funding_threshold: Optional[float] = None
     
     # 综合信息
-    holding_periods: int = 0  # 持仓周期数
     additional_info: Dict = field(default_factory=dict)
     
     def to_dict(self) -> dict:
@@ -175,7 +181,7 @@ class TPSignalRecord:
     def to_log_string(self) -> str:
         """转为日志字符串"""
         base = (
-            f"[止盈] {self.timestamp.strftime('%H:%M:%S')} | "
+            f"[出场] {self.timestamp.strftime('%H:%M:%S')} | "
             f"{self.symbol} {self.side} | "
             f"PnL:{self.pnl_pct*100:+.2f}%(${self.pnl_usdt:+.2f}) | "
             f"来源:{self.signal_type.value} | "

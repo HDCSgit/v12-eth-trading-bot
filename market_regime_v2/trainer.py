@@ -62,12 +62,20 @@ class MarketRegimeTrainer:
         
     def prepare_dataset(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         """
-        从原始数据准备训练集
+        从原始数据准备训练集 - 限制最近9个月
         
         Returns:
             X: 特征DataFrame
             y: 标签Series
         """
+        # CRITICAL: 只使用最近9个月的数据
+        # 9个月 * 30天 * 24小时 * 4 (15m bars) = 25920 bars
+        NINE_MONTHS_BARS = 9 * 30 * 24 * 4
+        if len(df) > NINE_MONTHS_BARS:
+            original_len = len(df)
+            df = df.tail(NINE_MONTHS_BARS).copy()
+            print(f"[数据限制] 从 {original_len} 条限制到最近9个月: {len(df)} 条")
+        
         print("Extracting features...")
         features_df = self.feature_extractor.extract(df)
         

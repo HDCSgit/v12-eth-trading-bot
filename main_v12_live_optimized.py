@@ -271,6 +271,13 @@ class V12MLModel:
         if len(df) < 300:
             logger.debug(f"数据量不足: {len(df)} < 300，跳过训练")
             return False
+        
+        # [2026-03-30] 限制训练样本为近9个月（约270天）
+        # 避免使用过时数据训练，提高模型对当前市场的适应性
+        max_training_days = 270  # 9个月
+        if len(df) > max_training_days * 96:  # 15分钟K线，每天96条
+            df = df.tail(max_training_days * 96)
+            logger.info(f"[训练限制] 只使用近{max_training_days}天数据 ({len(df)}条) 进行训练")
             
         try:
             df_feat = self.feature_eng.create_features(df)
@@ -568,6 +575,11 @@ class SignalGenerator:
         self.spike_circuit_breaker_until = None  # 熔断结束时间
         self.last_prices = []  # 最近价格记录 [(timestamp, price), ...]
         
+        # [2026-03-30] 多空平衡追踪 - 防止一边倒交易
+        self.recent_trades = []  # 最近交易记录 [(side, pnl), ...]
+        self.max_recent_trades = 5  # 记录最近5笔
+        self.consecutive_loss_limit = 3  # 同方向连续亏损3笔则暂停
+        
         # 市场辅助数据（非主导，仅参考）
         try:
             from binance_data_feed import BinanceMarketData
@@ -696,6 +708,36 @@ class SignalGenerator:
         self._last_evt_target = 0  # 重置EVT目标追踪
         self._evt_high_target = 0  # 重置EVT高目标
     
+    def _check_direction_balance(self, action: str) -> Tuple[bool, str]:
+        """检查多空平衡 - 防止一边倒交易
+        
+        Returns:
+            (是否允许, 原因)
+        """
+        if not self.recent_trades:
+            return True, ""
+        
+        # 统计同方向连续亏损次数
+        consecutive_losses = 0
+        for side, pnl in reversed(self.recent_trades):
+            if side == action and pnl < 0:
+                consecutive_losses += 1
+            elif side == action and pnl > 0:
+                break  # 有盈利中断连续亏损
+            else:
+                break  # 方向不同中断
+        
+        if consecutive_losses >= self.consecutive_loss_limit:
+            return False, f"{action}方向连续亏损{consecutive_losses}笔，暂停该方向"
+        
+        return True, ""
+    
+    def record_trade(self, side: str, pnl: float):
+        """记录交易结果用于平衡检查"""
+        self.recent_trades.append((side, pnl))
+        if len(self.recent_trades) > self.max_recent_trades:
+            self.recent_trades.pop(0)
+    
     def check_spike_circuit_breaker(self, current_price: float) -> Tuple[bool, str]:
         """插针熔断检测 - 价格剧烈波动保护
         
@@ -782,30 +824,9 @@ class SignalGenerator:
             pnl_calc = (entry_price - current_price) / entry_price if is_short else (current_price - entry_price) / entry_price
             leverage = CONFIG.get('LEVERAGE', 5)
             pnl_leverage = pnl_calc * leverage
-            # 优先尝试新出场系统（如果可用且有position_manager）
-            if self.exit_adapter and hasattr(self, 'position_manager') and self.position_manager:
-                try:
-                    exit_signal = self.exit_adapter.check_exit(
-                        self.position_manager,
-                        current_price=current_price,
-                        atr=atr,
-                        regime=regime.value,
-                        funding_rate=funding_rate,
-                        df=df_feat
-                    )
-                    
-                    if exit_signal.should_exit:
-                        return TradingSignal(
-                            'CLOSE',
-                            1.0,
-                            SignalSource.TECHNICAL,
-                            exit_signal.reason,
-                            atr,
-                            regime=regime,
-                            funding_rate=funding_rate
-                        )
-                except Exception as e:
-                    logger.warning(f"[出场检查] 新系统异常，回退到旧系统: {e}")
+            # [禁用新出场系统] 直接使用固定止损止盈逻辑
+            # 新出场系统使用ATR动态止损，已禁用
+            pass  # 跳过新系统，直接使用下方的_check_exit_signal
             
             # 使用旧系统检查出场（保底方案）
             old_signal = self._check_exit_signal(
@@ -1102,6 +1123,19 @@ class SignalGenerator:
                 signal.ml_proba_short = ml_proba[0]
                 signal.ml_proba_long = ml_proba[1]
                 
+                # 多空平衡检查 - 防止一边倒交易
+                allowed, block_reason = self._check_direction_balance(action)
+                if not allowed:
+                    logger.warning(f"[多空平衡阻止] {block_reason}")
+                    return TradingSignal(
+                        'HOLD', ml_confidence * 0.5, SignalSource.RISK,
+                        f'多空平衡:{block_reason}',
+                        atr, sl_price=0, tp_price=0, regime=regime, funding_rate=funding_rate,
+                        ml_direction=ml_direction, ml_confidence=ml_confidence,
+                        ml_proba_short=ml_proba[0], ml_proba_long=ml_proba[1],
+                        trend_direction=trend_direction
+                    )
+                
                 # 应用市场辅助数据微调（非主导，仅轻微调整）
                 market_context = self._get_market_context()
                 return self._apply_market_context_adjustment(signal, market_context)
@@ -1157,6 +1191,21 @@ class SignalGenerator:
                        f"{tech_signal['reason']} | 环境:{regime.value} | 持仓检查已跳过")
             
             sl_price, tp_price = self._calculate_sl_tp(action, current_price, atr, regime)
+            
+            # 多空平衡检查 - 技术信号也需要检查
+            allowed, block_reason = self._check_direction_balance(action)
+            if not allowed:
+                logger.warning(f"[多空平衡阻止-技术] {block_reason}")
+                return TradingSignal(
+                    'HOLD', tech_signal['confidence'] * 0.5, SignalSource.RISK,
+                    f'多空平衡:{block_reason}',
+                    atr, sl_price=0, tp_price=0, regime=regime, funding_rate=funding_rate,
+                    ml_direction=ml_direction if 'ml_direction' in locals() else 0,
+                    ml_confidence=ml_confidence if 'ml_confidence' in locals() else 0,
+                    ml_proba_short=ml_proba[0] if 'ml_proba' in locals() else 0.5,
+                    ml_proba_long=ml_proba[1] if 'ml_proba' in locals() else 0.5,
+                    trend_direction=regime.value
+                )
             
             # 如果有ML信息，一并记录（这是ML被阻止后的备选）
             signal = TradingSignal(
@@ -1395,6 +1444,7 @@ class SignalGenerator:
                     if funding_rate < funding_threshold:
                         # 区间位置过滤
                         pos_allowed, pos_reason = self._check_daily_position_filter('BUY', close, df)
+                        position_pct = self._get_daily_position_pct(close, df)
                         if not pos_allowed:
                             # 日志优化：不重复输出相同原因
                             pos_block_key = f"BUY_{position_pct:.0f}"
@@ -1475,6 +1525,7 @@ class SignalGenerator:
                     if funding_rate > -funding_threshold:
                         # 区间位置过滤
                         pos_allowed, pos_reason = self._check_daily_position_filter('SELL', close, df)
+                        position_pct = self._get_daily_position_pct(close, df)
                         if not pos_allowed:
                             # 日志优化：不重复输出相同原因
                             pos_block_key = f"SELL_{position_pct:.0f}"
@@ -3392,6 +3443,9 @@ class V12OptimizedTrader:
                 
                 # 更新风控统计 (使用扣除手续费的实际收益率)
                 self.risk_mgr.record_trade(actual_pnl_pct)
+                
+                # 记录到信号生成器用于多空平衡检查
+                self.signal_generator.record_trade(side, actual_pnl_pct)
                 
                 # 更新止盈记录中的盈亏（用于后期分析）
                 try:

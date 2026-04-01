@@ -136,9 +136,9 @@ class EVTTakeProfitEngine:
     def __init__(
         self,
         window_size: int = 500,
-        threshold_quantile: float = 0.90,
+        threshold_quantile: float = 0.80,
         update_interval: int = 50,
-        safety_factor: float = 0.85,
+        safety_factor: float = 1.0,  # 平衡：不折扣也不放大
         min_samples: int = 100
     ):
         self.window_size = window_size
@@ -316,17 +316,24 @@ class EVTTakeProfitEngine:
             # 应用安全折扣
             adjusted_return = extreme_return * self.safety_factor
             
-            # 根据市场环境调整
-            regime_multiplier = 1.0
-            if regime in ['TRENDING_UP', 'TRENDING_DOWN', 'BREAKOUT']:
-                regime_multiplier = 1.3  # 趋势市放大止盈
-            elif regime in ['SIDEWAYS', 'CONSOLIDATION']:
-                regime_multiplier = 0.7  # 震荡市缩小止盈
+            # 根据市场环境动态调整EVT目标（优化后）
+            # 震荡市：0.7% (容易达到，避免利润回吐)
+            # 趋势市：1.0% (平衡)
+            # 强趋势/突破：1.3% (放大利润)
+            if regime in ['TRENDING_UP', 'TRENDING_DOWN']:
+                base_target = 0.010  # 趋势市1.0%
+            elif regime in ['BREAKOUT', 'PUMP']:
+                base_target = 0.013  # 强趋势1.3%
+            elif regime in ['SIDEWAYS', 'SIDEWAYS_UP', 'SIDEWAYS_DOWN', 'CONSOLIDATION']:
+                base_target = 0.007  # 震荡市0.7%
+            else:
+                base_target = 0.009  # 其他情况0.9%
             
-            final_return = adjusted_return * regime_multiplier
+            # 结合EVT计算结果和基础目标，取较合理值
+            final_return = max(base_target, adjusted_return * 0.5)
             
-            # 限制范围
-            final_return = max(0.003, min(final_return, 0.05))  # 0.3% ~ 5%
+            # 限制范围（0.7% ~ 5%）
+            final_return = max(0.007, min(final_return, 0.05))
             
             info = {
                 'method': 'EVT_GPD',
@@ -338,7 +345,7 @@ class EVTTakeProfitEngine:
                 'adjusted_return': adjusted_return,
                 'final_return': final_return,
                 'safety_factor': self.safety_factor,
-                'regime_multiplier': regime_multiplier,
+                'base_target': base_target,
                 'confidence': confidence
             }
             

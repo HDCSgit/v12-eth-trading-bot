@@ -23,7 +23,7 @@ from market_regime_v2 import MarketRegimeTrainer, RegimeFeatureExtractor
 
 
 def load_data(filepath: str) -> pd.DataFrame:
-    """加载OHLCV数据"""
+    """加载OHLCV数据 - 限制最近9个月"""
     df = pd.read_csv(filepath)
     
     # 确保必要的列存在
@@ -39,6 +39,14 @@ def load_data(filepath: str) -> pd.DataFrame:
     elif 'datetime' in df.columns:
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.set_index('datetime', inplace=True)
+    
+    # CRITICAL: 只使用最近9个月的数据
+    # 9个月 * 30天 * 24小时 * 4 (15m bars) = 25920 bars
+    NINE_MONTHS_BARS = 9 * 30 * 24 * 4
+    if len(df) > NINE_MONTHS_BARS:
+        original_len = len(df)
+        df = df.tail(NINE_MONTHS_BARS)
+        print(f"[数据限制] 从 {original_len} 条限制到最近9个月: {len(df)} 条")
     
     print(f"Loaded {len(df)} rows from {filepath}")
     print(f"Date range: {df.index[0]} to {df.index[-1]}")
